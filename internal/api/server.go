@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 	_ "embed"
 
@@ -67,11 +68,13 @@ func New(store *storage.Store, client *inference.Client, model string, logger *s
 	mux.HandleFunc("/api/query", s.handleQuery)
 	mux.HandleFunc("/api/status", s.handleStatus)
 
+	mux.HandleFunc("/api/chat", s.handleChat)
+
 	s.srv = &http.Server{
 		Addr:         defaultAddr,
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 150 * time.Second, // chat endpoint can take up to ~90s for LLM cold-start
 	}
 	return s
 }
@@ -174,6 +177,94 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"results": results, "query": q})
+}
+
+// handleChat retrieves relevant memories and returns a conversational answer
+// synthesised by the local LLM, along with the source memory cards.
+//
+// GET /api/chat?q=<question>
+// Response: {"answer":"...","sources":[...],"query":"..."}
+func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing query parameter q"})
+		return
+	}
+
+	// Allow up to 120s for embed + neighbour search + LLM generation.
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+
+	embedding, err := s.client.Embed(ctx, q)
+	if err != nil {
+		s.logger.Warn("chat: embed failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "embedding failed: " + err.Error()})
+		return
+	}
+
+	scored, err := s.store.NearestNeighbors(ctx, embedding, 8)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "search failed: " + err.Error()})
+		return
+	}
+
+	var sources []QueryResult
+	var sb strings.Builder
+	for i, sn := range scored {
+		idBytes, err := hex.DecodeString(sn.NodeID)
+		if err != nil || len(idBytes) != 16 {
+			continue
+		}
+		var nodeID [16]byte
+		copy(nodeID[:], idBytes)
+		node, err := s.store.Read(ctx, nodeID)
+		if err != nil {
+			continue
+		}
+		sources = append(sources, QueryResult{
+			ID:          sn.NodeID,
+			CapturedAt:  node.CapturedAt,
+			Description: node.Description,
+			App:         node.ProcessName,
+			WindowTitle: node.WindowTitle,
+			BrowserURL:  node.BrowserURL,
+			Tags:        node.Tags,
+			Similarity:  sn.Similarity,
+		})
+		fmt.Fprintf(&sb, "[%d] %s | %s | %s\n%s\n\n",
+			i+1,
+			node.CapturedAt.Format("Jan 2 3:04 PM"),
+			node.ProcessName,
+			node.WindowTitle,
+			node.Description,
+		)
+	}
+
+	var answer string
+	if sb.Len() == 0 {
+		answer = "I don't have any relevant memories yet. Keep Digital Ghost running and I'll learn more about your activity."
+	} else {
+		prompt := "You are Digital Ghost, a personal memory assistant that has been watching the user's screen.\n" +
+			"The user asked: \"" + q + "\"\n\n" +
+			"Here are relevant screen memory snapshots:\n\n" +
+			sb.String() +
+			"Answer the user's question directly and naturally in 2-4 sentences. " +
+			"Do not say 'screenshot' or 'memory' — just answer as if you observed their activity. " +
+			"If the memories don't fully answer the question, say so briefly."
+
+		answer, err = s.client.Generate(ctx, prompt)
+		if err != nil {
+			s.logger.Warn("chat: LLM generation failed", "error", err)
+			// Degrade gracefully — return sources without an answer.
+			answer = ""
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"answer":  answer,
+		"sources": sources,
+		"query":   q,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

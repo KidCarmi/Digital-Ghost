@@ -96,6 +96,32 @@
     font-size: 0.73rem; color: #64748b;
   }
 
+  .answer-box {
+    background: #16213a;
+    border: 1px solid #3730a3;
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin-bottom: 20px;
+    line-height: 1.65;
+    color: #e2e8f0;
+    font-size: 0.97rem;
+    position: relative;
+  }
+  .answer-box::before {
+    content: "◉";
+    color: #a78bfa;
+    font-size: 0.75rem;
+    margin-right: 8px;
+  }
+  .sources-label {
+    font-size: 0.75rem;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 10px;
+    margin-top: 4px;
+  }
+
   .empty { text-align: center; color: #475569; padding: 60px 0; font-size: 0.95rem; }
   .error { text-align: center; color: #f87171; padding: 40px 0; font-size: 0.9rem; }
 
@@ -147,18 +173,29 @@
     const q = qEl.value.trim();
     if (!q) return;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Searching...';
+    btn.innerHTML = '<span class="spinner"></span>Thinking...';
     res.innerHTML = '';
 
     try {
-      const r = await fetch('/api/query?q=' + encodeURIComponent(q));
+      const r = await fetch('/api/chat?q=' + encodeURIComponent(q));
       const d = await r.json();
       if (!r.ok) { showError(d.error || 'Search failed'); return; }
-      if (!d.results || d.results.length === 0) {
+
+      const hasSources = d.sources && d.sources.length > 0;
+      if (!hasSources && !d.answer) {
         res.innerHTML = '<div class="empty">No memories found. DG may still be building your memory — try again in a minute.</div>';
         return;
       }
-      res.innerHTML = d.results.map(renderCard).join('');
+
+      let html = '';
+      if (d.answer) {
+        html += `<div class="answer-box">${esc(d.answer)}</div>`;
+      }
+      if (hasSources) {
+        html += `<div class="sources-label">Memory sources</div>`;
+        html += d.sources.map(renderCard).join('');
+      }
+      res.innerHTML = html;
     } catch (e) {
       showError('Could not reach Digital Ghost daemon.');
     } finally {

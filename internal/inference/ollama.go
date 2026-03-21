@@ -233,6 +233,27 @@ type ollamaEmbedResponse struct {
 	Embedding []float32 `json:"embedding"`
 }
 
+// Generate calls Ollama /api/generate with a text-only prompt (no images).
+// Used for conversational summarization over retrieved memory descriptions.
+func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
+	reqBody := ollamaGenerateRequest{
+		Model:  c.cfg.Model,
+		Prompt: prompt,
+		Stream: false,
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshaling request: %w", err)
+	}
+	result, err := c.doRequest(ctx, c.cfg.OllamaURL+"/api/generate", bodyBytes)
+	if err != nil {
+		return "", err
+	}
+	// doRequest returns description (with TAGS stripped); for a conversational
+	// response there are no tags, so result.Description is the full reply.
+	return result.Description, nil
+}
+
 // Embed returns a vector embedding for the given text using the configured model.
 // The embedding can be used for semantic similarity search.
 func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
