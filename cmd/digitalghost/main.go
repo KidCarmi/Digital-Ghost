@@ -281,7 +281,10 @@ func runInferenceLoop(
 
 		// Compute engagement score.
 		signals := filter.EngagementSignals{
-			DwellSeconds: 5, // TODO: wire real dwell time from capture.
+			DwellSeconds:          frame.DwellSeconds,
+			TypedWithinSeconds:    frame.SecondsSinceInput,
+			ScrolledWithinSeconds: frame.SecondsSinceInput,
+			ClickedWithinSeconds:  frame.SecondsSinceInput,
 			ContentClass: filter.Classify(filter.ClassifierInput{
 				ProcessName: frame.WindowCtx.ProcessName,
 				WindowTitle: frame.WindowCtx.WindowTitle,

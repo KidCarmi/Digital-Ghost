@@ -47,6 +47,13 @@ These screenshots are:
   • Stored in an encrypted local database
   • Used only to power a personal memory search feature
 
+Digital Ghost ALSO:
+  • Captures all connected monitors (multi-monitor setups are fully recorded)
+  • Reads the URL from your browser's address bar when a browser is the active window
+    (supported browsers: Chrome, Edge, Firefox, Opera, Brave, Vivaldi, Chromium)
+  • Measures keyboard/mouse activity to assess engagement (no keystrokes are recorded,
+    only the time elapsed since the last input event)
+
 Digital Ghost will NOT capture:
   • Password managers (1Password, Bitwarden, KeePass, etc.)
   • Banking or financial websites
