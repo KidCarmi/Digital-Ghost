@@ -7,6 +7,7 @@
 # Supported platforms:
 #   Linux  — Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE
 #   macOS  — 12.3+ (Monterey or later)
+#   Windows — use scripts/setup.ps1 instead (PowerShell)
 #
 # Usage:
 #   chmod +x scripts/setup.sh
@@ -66,6 +67,11 @@ detect_platform() {
   ARCH="$(uname -m)"
 
   case "$OS" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      die "Windows detected. Please use the PowerShell setup script instead:
+  Right-click scripts\\setup.ps1 > 'Run with PowerShell'
+  OR: powershell -ExecutionPolicy Bypass -File scripts\\setup.ps1"
+      ;;
     Linux)
       PLATFORM="linux"
       # Detect distro family.
