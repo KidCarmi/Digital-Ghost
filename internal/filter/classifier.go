@@ -113,6 +113,7 @@ func isSocial(url, title, proc string) bool {
 }
 
 func isWorkCode(url, title, proc string) bool {
+	// Substring-matched process names (safe — these are distinctive prefixes).
 	procs := []string{
 		"code", "code-insiders", // VS Code
 		"vim", "nvim", "neovim",
@@ -124,11 +125,19 @@ func isWorkCode(url, title, proc string) bool {
 		"zed",
 		"helix",
 		"cursor",
-		"gnome-terminal", "konsole", "xterm", "alacritty", "kitty", "wezterm", "iterm2", "windows terminal",
-		"bash", "zsh", "fish", "sh",
+		"gnome-terminal", "konsole", "xterm", "alacritty", "kitty", "wezterm", "iterm2",
 	}
 	for _, p := range procs {
 		if strings.Contains(proc, p) {
+			return true
+		}
+	}
+
+	// Exact-matched short shell names — avoid substring false-positives
+	// e.g. "sh" would match "powershell_ise", "bash" would match "git-bash".
+	exactProcs := []string{"bash", "zsh", "fish", "sh", "ksh", "tcsh", "cmd", "powershell", "pwsh", "windows terminal"}
+	for _, p := range exactProcs {
+		if proc == p || proc == p+".exe" {
 			return true
 		}
 	}
