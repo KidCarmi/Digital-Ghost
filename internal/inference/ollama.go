@@ -66,20 +66,21 @@ type ollamaGenerateResponse struct {
 }
 
 // inferencePrompt is the prompt sent to the VLM.
-// It is tuned to produce structured, indexable descriptions rather than conversational output.
-const inferencePrompt = `Describe the content of this screenshot concisely and precisely.
+// Tuned to produce warm, personal memory notes that read like a thoughtful
+// human recall rather than a robotic screen description.
+const inferencePrompt = `You're helping someone remember what they were doing. Write a short, warm memory note — like a friend describing what they noticed on the screen, in plain conversational English.
+
 Focus on:
-- The primary application or document being viewed
-- The main topic or subject matter
-- Any visible text headings, titles, or key terms
-- The type of activity (reading, coding, browsing, writing, etc.)
+- What the person was actually doing or reading (be specific and useful)
+- The main topic, project, or task they seemed to be working on
+- Any meaningful text, code, names, or ideas that were visible
 
-Do NOT describe:
-- UI chrome, menus, or taskbars
-- Colors or visual aesthetics
-- Anything that looks like credentials, passwords, or private data
+Skip entirely:
+- Toolbars, window chrome, UI widgets, and menu bars
+- Layout, colors, and visual design
+- Anything that looks like passwords, credentials, or private data
 
-Respond in 2-3 sentences. End with: TAGS: [comma-separated keywords]`
+Write 2-3 warm, natural sentences — like a memory you'd want to find later. End with: TAGS: [comma-separated keywords]`
 
 // NewClient creates an Ollama client from configuration.
 func NewClient(cfg config.InferenceConfig, logger *slog.Logger) *Client {

@@ -164,6 +164,30 @@ func (s *JSONStore) DeleteRecord(_ context.Context, _ string, nodeID [16]byte) e
 	return s.removeFromIndex(nodeID)
 }
 
+func (s *JSONStore) ListInRange(_ context.Context, _ string, after, before time.Time) ([][16]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entries, err := s.loadIndex()
+	if err != nil {
+		return nil, err
+	}
+
+	var ids [][16]byte
+	for _, e := range entries {
+		if (after.IsZero() || !e.Timestamp.Before(after)) && e.Timestamp.Before(before) {
+			idBytes, err := hex.DecodeString(e.ID)
+			if err != nil || len(idBytes) != 16 {
+				continue
+			}
+			var id [16]byte
+			copy(id[:], idBytes)
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
 func (s *JSONStore) ListOlderThan(_ context.Context, _ string, before time.Time) ([][16]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -83,6 +83,10 @@ type lanceDBConn interface {
 	// ListOlderThan lists node IDs with timestamps before the given time.
 	ListOlderThan(ctx context.Context, table string, before time.Time) ([][16]byte, error)
 
+	// ListInRange lists node IDs with timestamps in [after, before).
+	// Pass a zero after to list from the beginning of time.
+	ListInRange(ctx context.Context, table string, after, before time.Time) ([][16]byte, error)
+
 	// Count returns the total number of stored nodes and the timestamp of the
 	// most recently captured one (zero Time if no nodes exist).
 	Count(ctx context.Context, table string) (int, time.Time, error)
@@ -170,6 +174,29 @@ func (s *Store) Delete(ctx context.Context, nodeID [16]byte) error {
 	}
 	s.logger.Info("deleted memory node", "node_id", fmt.Sprintf("%x", nodeID))
 	return nil
+}
+
+// DeleteRange deletes all nodes with timestamps in [after, before).
+// Pass a zero after to delete from the beginning of time (i.e. delete everything up to before).
+// Returns the number of nodes successfully deleted.
+func (s *Store) DeleteRange(ctx context.Context, after, before time.Time) (int, error) {
+	nodeIDs, err := s.db.ListInRange(ctx, defaultTable, after, before)
+	if err != nil {
+		return 0, fmt.Errorf("listing nodes in range: %w", err)
+	}
+	var failed int
+	for _, id := range nodeIDs {
+		if err := s.Delete(ctx, id); err != nil {
+			s.logger.Warn("failed to delete node during range deletion",
+				"node_id", fmt.Sprintf("%x", id), "error", err)
+			failed++
+		}
+	}
+	deleted := len(nodeIDs) - failed
+	if failed > 0 {
+		return deleted, fmt.Errorf("range deletion: %d/%d deletions failed", failed, len(nodeIDs))
+	}
+	return deleted, nil
 }
 
 // Stats returns the total node count and the timestamp of the most recent capture.

@@ -125,6 +125,39 @@
   .empty { text-align: center; color: #475569; padding: 60px 0; font-size: 0.95rem; }
   .error { text-align: center; color: #f87171; padding: 40px 0; font-size: 0.9rem; }
 
+  .manage-toggle {
+    text-align: center; margin-bottom: 28px;
+  }
+  .manage-toggle button {
+    background: none; border: 1px solid #2d3148; border-radius: 8px;
+    color: #475569; font-size: 0.8rem; padding: 6px 14px; cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .manage-toggle button:hover { color: #94a3b8; border-color: #475569; }
+
+  .manage-panel {
+    background: #1a1f2e; border: 1px solid #2d3148; border-radius: 12px;
+    padding: 18px 20px; margin-bottom: 28px; display: none;
+  }
+  .manage-panel h3 {
+    font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em;
+    color: #475569; margin-bottom: 14px;
+  }
+  .manage-panel .delete-row {
+    display: flex; flex-wrap: wrap; gap: 10px;
+  }
+  .manage-panel .del-btn {
+    background: #1e2130; border: 1px solid #3d1f1f; border-radius: 8px;
+    color: #f87171; font-size: 0.85rem; padding: 8px 16px; cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .manage-panel .del-btn:hover { background: #2a1a1a; border-color: #f87171; }
+  .manage-panel .del-btn:disabled { opacity: 0.4; cursor: default; }
+  .manage-panel .del-btn.all { border-color: #7f1d1d; color: #fca5a5; }
+  .manage-panel .del-status {
+    font-size: 0.8rem; color: #475569; margin-top: 10px; min-height: 1.2em;
+  }
+
   .spinner {
     display: inline-block; width: 16px; height: 16px;
     border: 2px solid #4c1d95; border-top-color: #a78bfa;
@@ -147,6 +180,22 @@
   </div>
 
   <div id="status-bar">Loading status...</div>
+
+  <div class="manage-toggle">
+    <button onclick="toggleManage()">Manage memories</button>
+  </div>
+
+  <div class="manage-panel" id="manage-panel">
+    <h3>Clear memories</h3>
+    <div class="delete-row">
+      <button class="del-btn" onclick="deleteRange('today')">Today</button>
+      <button class="del-btn" onclick="deleteRange('week')">This week</button>
+      <button class="del-btn" onclick="deleteRange('month')">This month</button>
+      <button class="del-btn all" onclick="deleteRange('all')">All memories</button>
+    </div>
+    <div class="del-status" id="del-status"></div>
+  </div>
+
   <div id="results"></div>
 </div>
 
@@ -233,6 +282,40 @@
 
   function showError(msg) {
     res.innerHTML = `<div class="error">${esc(msg)}</div>`;
+  }
+
+  function toggleManage() {
+    const p = document.getElementById('manage-panel');
+    p.style.display = p.style.display === 'block' ? 'none' : 'block';
+    document.getElementById('del-status').textContent = '';
+  }
+
+  const rangeLabels = { today: "today's", week: "this week's", month: "this month's", all: "all" };
+
+  async function deleteRange(range) {
+    const label = rangeLabels[range] || range;
+    const confirmed = confirm(`Delete ${label} memories? This cannot be undone.`);
+    if (!confirmed) return;
+
+    const delStatus = document.getElementById('del-status');
+    const btns = document.querySelectorAll('.del-btn');
+    btns.forEach(b => b.disabled = true);
+    delStatus.textContent = 'Deleting…';
+
+    try {
+      const r = await fetch('/api/delete?range=' + range, { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) {
+        delStatus.textContent = 'Error: ' + (d.error || 'delete failed');
+      } else {
+        delStatus.textContent = `Deleted ${d.deleted} memor${d.deleted === 1 ? 'y' : 'ies'}.`;
+        loadStatus();
+      }
+    } catch {
+      delStatus.textContent = 'Could not reach daemon.';
+    } finally {
+      btns.forEach(b => b.disabled = false);
+    }
   }
 
   loadStatus();

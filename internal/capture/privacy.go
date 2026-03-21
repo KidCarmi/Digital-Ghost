@@ -22,6 +22,7 @@ package capture
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/KidCarmi/digital-ghost/internal/filter"
 )
@@ -79,7 +80,14 @@ func (g *Gate) Check() GateResult {
 		return GateResult{Blocked: true, Reason: decision.Reason}
 	}
 
-	// Step 3: Check for sensitive input role even if process is not on the blocklist.
+	// Step 3: Block capture of the Digital Ghost UI itself.
+	// The search UI runs on :7327 — capturing it would be circular and useless.
+	// This is a hard system invariant, not a user-configurable preference.
+	if strings.Contains(ctx.BrowserURL, ":7327") {
+		return GateResult{Blocked: true, Reason: "dg_ui_self_exclusion"}
+	}
+
+	// Step 4: Check for sensitive input role even if process is not on the blocklist.
 	// This catches password fields in otherwise-allowed applications (e.g., a browser
 	// not currently on a banking URL, but with a focused password input).
 	if ctx.FocusedInputRole != "" {

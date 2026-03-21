@@ -69,6 +69,7 @@ func New(store *storage.Store, client *inference.Client, model string, logger *s
 	mux.HandleFunc("/api/status", s.handleStatus)
 
 	mux.HandleFunc("/api/chat", s.handleChat)
+	mux.HandleFunc("/api/delete", s.handleDelete)
 
 	s.srv = &http.Server{
 		Addr:         defaultAddr,
@@ -242,15 +243,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	var answer string
 	if sb.Len() == 0 {
-		answer = "I don't have any relevant memories yet. Keep Digital Ghost running and I'll learn more about your activity."
+		answer = "I don't have anything relevant stored yet — keep me running and I'll start building up your memory. Try asking again in a bit!"
 	} else {
-		prompt := "You are Digital Ghost, a personal memory assistant that has been watching the user's screen.\n" +
-			"The user asked: \"" + q + "\"\n\n" +
-			"Here are relevant screen memory snapshots:\n\n" +
+		prompt := "You are Digital Ghost, a warm personal assistant who has been quietly watching over the user's screen to help them remember their day.\n" +
+			"The user is asking: \"" + q + "\"\n\n" +
+			"Here are some moments from their screen that seem relevant:\n\n" +
 			sb.String() +
-			"Answer the user's question directly and naturally in 2-4 sentences. " +
-			"Do not say 'screenshot' or 'memory' — just answer as if you observed their activity. " +
-			"If the memories don't fully answer the question, say so briefly."
+			"Respond naturally and warmly in 2-4 sentences, like a thoughtful friend who remembers things for them. " +
+			"Don't mention screenshots, memories, or snapshots — just speak as if you were there. " +
+			"If what you saw doesn't fully answer the question, be honest about it in a friendly way."
 
 		answer, err = s.client.Generate(ctx, prompt)
 		if err != nil {
@@ -265,6 +266,45 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		"sources": sources,
 		"query":   q,
 	})
+}
+
+// handleDelete deletes memory nodes in a given time range.
+//
+// POST /api/delete?range=today|week|month|all
+// Response: {"deleted": N, "range": "..."}
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "use POST"})
+		return
+	}
+
+	rangeParam := r.URL.Query().Get("range")
+	now := time.Now()
+	var after time.Time
+
+	switch rangeParam {
+	case "today":
+		after = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	case "week":
+		after = now.AddDate(0, 0, -7)
+	case "month":
+		after = now.AddDate(0, 0, -30)
+	case "all":
+		// zero after = from the beginning of time
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "range must be one of: today, week, month, all",
+		})
+		return
+	}
+
+	deleted, err := s.store.DeleteRange(r.Context(), after, now.Add(time.Second))
+	if err != nil {
+		s.logger.Warn("delete range partially failed", "range", rangeParam, "deleted", deleted, "error", err)
+	}
+
+	s.logger.Info("user-initiated memory deletion", "range", rangeParam, "deleted", deleted)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "range": rangeParam})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
