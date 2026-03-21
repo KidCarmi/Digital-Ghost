@@ -354,8 +354,20 @@ function Test-GoBuild {
     }
     Push-Location $REPO_ROOT
     try {
+        Write-Info "Running go mod tidy in $REPO_ROOT"
+        $tidyOut = go mod tidy 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "go mod tidy failed:"
+            $tidyOut | ForEach-Object { Write-Warn "  $_" }
+        } else {
+            Write-Ok "go mod tidy succeeded"
+        }
+
         Write-Info "Running go build ./... in $REPO_ROOT"
+        $prevPref = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         $output = go build ./... 2>&1
+        $ErrorActionPreference = $prevPref
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "go build ./... succeeded"
         } else {
