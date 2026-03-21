@@ -27,10 +27,28 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"path/filepath"
+	"syscall"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 
 	"github.com/KidCarmi/digital-ghost/internal/config"
 )
+
+var (
+	user32                  = syscall.NewLazyDLL("user32.dll")
+	kernel32                = syscall.NewLazyDLL("kernel32.dll")
+	procGetForegroundWindow = user32.NewProc("GetForegroundWindow")
+	procGetWindowTextW      = user32.NewProc("GetWindowTextW")
+	procGetWindowThreadPID  = user32.NewProc("GetWindowThreadProcessId")
+	procOpenProcess         = kernel32.NewProc("OpenProcess")
+	procQueryFullProcessImageNameW = kernel32.NewProc("QueryFullProcessImageNameW")
+	procCloseHandle         = kernel32.NewProc("CloseHandle")
+)
+
+const processQueryLimitedInformation = 0x1000
 
 // WindowsCapturer captures frames using DXGI Desktop Duplication.
 type WindowsCapturer struct {
@@ -122,19 +140,53 @@ func (c *WindowsCapturer) captureFrame() (*Frame, error) {
 func (c *WindowsCapturer) Close() error { return nil }
 
 // queryWindowContextImpl is the Windows implementation of queryWindowContext.
-// Production path:
-//  1. GetForegroundWindow() → HWND
-//  2. GetWindowThreadProcessId(hwnd) → PID
-//  3. OpenProcess + QueryFullProcessImageName → executable path
-//  4. GetWindowText(hwnd) → window title
-//  5. UI Automation (IUIAutomation) → browser URL bar value, focused element control type
+// Uses Win32 APIs to get the foreground window title and process name.
 func queryWindowContextImpl() (windowMetadata, error) {
-	// Stub: return placeholder metadata.
+	// 1. GetForegroundWindow() → HWND
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return windowMetadata{ProcessName: "unknown", WindowTitle: ""}, nil
+	}
+
+	// 2. GetWindowText → window title
+	var titleBuf [512]uint16
+	procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&titleBuf[0])), uintptr(len(titleBuf)))
+	title := syscall.UTF16ToString(titleBuf[:])
+
+	// 3. GetWindowThreadProcessId → PID
+	var pid uint32
+	procGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+
+	// 4. OpenProcess + QueryFullProcessImageName → exe path
+	processName := "unknown"
+	if pid != 0 {
+		hProc, _, _ := procOpenProcess.Call(processQueryLimitedInformation, 0, uintptr(pid))
+		if hProc != 0 {
+			var exeBuf [windows.MAX_PATH]uint16
+			size := uint32(len(exeBuf))
+			ret, _, _ := procQueryFullProcessImageNameW.Call(
+				hProc,
+				0,
+				uintptr(unsafe.Pointer(&exeBuf[0])),
+				uintptr(unsafe.Pointer(&size)),
+			)
+			procCloseHandle.Call(hProc)
+			if ret != 0 {
+				exePath := syscall.UTF16ToString(exeBuf[:size])
+				processName = filepath.Base(exePath)
+				// Strip .exe suffix for cleaner display.
+				if len(processName) > 4 && processName[len(processName)-4:] == ".exe" {
+					processName = processName[:len(processName)-4]
+				}
+			}
+		}
+	}
+
 	return windowMetadata{
-		ProcessName:      "stub",
-		WindowTitle:      "Stub Window",
+		ProcessName:      processName,
+		WindowTitle:      title,
 		BrowserURL:       "",
 		FocusedInputRole: "",
-		PID:              0,
+		PID:              int(pid),
 	}, nil
 }

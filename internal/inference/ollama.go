@@ -222,6 +222,57 @@ func encodeFrameJPEG(frame *capture.Frame) (string, error) {
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
 
+// ollamaEmbedRequest matches the Ollama /api/embeddings endpoint schema.
+type ollamaEmbedRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+}
+
+// ollamaEmbedResponse matches the Ollama /api/embeddings response schema.
+type ollamaEmbedResponse struct {
+	Embedding []float32 `json:"embedding"`
+}
+
+// Embed returns a vector embedding for the given text using the configured model.
+// The embedding can be used for semantic similarity search.
+func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
+	reqBody := ollamaEmbedRequest{
+		Model:  c.cfg.Model,
+		Prompt: text,
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling embed request: %w", err)
+	}
+
+	url := c.cfg.OllamaURL + "/api/embeddings"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("creating embed request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embed HTTP request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("Ollama embed returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var embedResp ollamaEmbedResponse
+	if err := json.NewDecoder(resp.Body).Decode(&embedResp); err != nil {
+		return nil, fmt.Errorf("decoding embed response: %w", err)
+	}
+	if len(embedResp.Embedding) == 0 {
+		return nil, fmt.Errorf("Ollama returned empty embedding")
+	}
+	return embedResp.Embedding, nil
+}
+
 // Ping checks that Ollama is reachable and the configured model is available.
 func (c *Client) Ping(ctx context.Context) error {
 	url := c.cfg.OllamaURL + "/api/tags"

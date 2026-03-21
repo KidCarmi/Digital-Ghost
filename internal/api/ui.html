@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Digital Ghost — Memory Search</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    min-height: 100vh;
+    padding: 40px 20px;
+  }
+
+  .container { max-width: 760px; margin: 0 auto; }
+
+  header { text-align: center; margin-bottom: 40px; }
+  header h1 { font-size: 1.8rem; font-weight: 700; color: #a78bfa; letter-spacing: -0.02em; }
+  header p  { color: #64748b; font-size: 0.9rem; margin-top: 6px; }
+
+  .search-bar {
+    display: flex; gap: 10px; margin-bottom: 32px;
+  }
+  .search-bar input {
+    flex: 1;
+    background: #1e2130;
+    border: 1px solid #2d3148;
+    border-radius: 10px;
+    padding: 14px 18px;
+    color: #e2e8f0;
+    font-size: 1rem;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .search-bar input:focus { border-color: #7c3aed; }
+  .search-bar input::placeholder { color: #475569; }
+  .search-bar button {
+    background: #7c3aed;
+    border: none;
+    border-radius: 10px;
+    padding: 14px 24px;
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  .search-bar button:hover { background: #6d28d9; }
+  .search-bar button:disabled { background: #374151; cursor: default; }
+
+  #status-bar {
+    font-size: 0.8rem;
+    color: #475569;
+    text-align: center;
+    margin-bottom: 28px;
+  }
+  #status-bar span { color: #a78bfa; font-weight: 600; }
+
+  #results { display: flex; flex-direction: column; gap: 14px; }
+
+  .card {
+    background: #1e2130;
+    border: 1px solid #2d3148;
+    border-radius: 12px;
+    padding: 18px 20px;
+    transition: border-color 0.15s;
+  }
+  .card:hover { border-color: #4c1d95; }
+
+  .card-meta {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 0.78rem; color: #64748b; margin-bottom: 10px;
+  }
+  .card-meta .app {
+    background: #2d3148; border-radius: 6px;
+    padding: 2px 8px; color: #a78bfa; font-weight: 600;
+  }
+  .card-meta .score {
+    margin-left: auto; color: #34d399; font-weight: 600;
+  }
+
+  .card-desc {
+    font-size: 0.95rem; line-height: 1.6; color: #cbd5e1;
+  }
+
+  .card-tags {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;
+  }
+  .card-tags span {
+    background: #1a1f33; border: 1px solid #2d3148;
+    border-radius: 20px; padding: 2px 10px;
+    font-size: 0.73rem; color: #64748b;
+  }
+
+  .empty { text-align: center; color: #475569; padding: 60px 0; font-size: 0.95rem; }
+  .error { text-align: center; color: #f87171; padding: 40px 0; font-size: 0.9rem; }
+
+  .spinner {
+    display: inline-block; width: 16px; height: 16px;
+    border: 2px solid #4c1d95; border-top-color: #a78bfa;
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+    vertical-align: middle; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>◉ Digital Ghost</h1>
+    <p>Search your local encrypted memory</p>
+  </header>
+
+  <div class="search-bar">
+    <input id="q" type="text" placeholder="What were you working on?..." autofocus />
+    <button id="btn" onclick="search()">Search</button>
+  </div>
+
+  <div id="status-bar">Loading status...</div>
+  <div id="results"></div>
+</div>
+
+<script>
+  const qEl  = document.getElementById('q');
+  const btn  = document.getElementById('btn');
+  const res  = document.getElementById('results');
+  const stat = document.getElementById('status-bar');
+
+  qEl.addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+
+  async function loadStatus() {
+    try {
+      const r = await fetch('/api/status');
+      const d = await r.json();
+      stat.innerHTML = `<span>${d.nodes}</span> memories stored &nbsp;·&nbsp; model: <span>${d.model}</span>` +
+        (d.last_capture ? ` &nbsp;·&nbsp; last capture: <span>${fmtTime(d.last_capture)}</span>` : '');
+    } catch {
+      stat.textContent = 'Daemon not reachable';
+    }
+  }
+
+  async function search() {
+    const q = qEl.value.trim();
+    if (!q) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Searching...';
+    res.innerHTML = '';
+
+    try {
+      const r = await fetch('/api/query?q=' + encodeURIComponent(q));
+      const d = await r.json();
+      if (!r.ok) { showError(d.error || 'Search failed'); return; }
+      if (!d.results || d.results.length === 0) {
+        res.innerHTML = '<div class="empty">No memories found. DG may still be building your memory — try again in a minute.</div>';
+        return;
+      }
+      res.innerHTML = d.results.map(renderCard).join('');
+    } catch (e) {
+      showError('Could not reach Digital Ghost daemon.');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Search';
+    }
+  }
+
+  function renderCard(n) {
+    const tags = (n.tags || []).map(t => `<span>${t}</span>`).join('');
+    const pct  = n.similarity != null ? Math.round(n.similarity * 100) + '%' : '';
+    return `
+      <div class="card">
+        <div class="card-meta">
+          <span class="app">${esc(n.app || 'unknown')}</span>
+          <span>${fmtTime(n.captured_at)}</span>
+          ${n.window_title ? `<span>${esc(n.window_title)}</span>` : ''}
+          ${pct ? `<span class="score">${pct}</span>` : ''}
+        </div>
+        <div class="card-desc">${esc(n.description)}</div>
+        ${tags ? `<div class="card-tags">${tags}</div>` : ''}
+      </div>`;
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleString();
+    } catch { return iso; }
+  }
+
+  function showError(msg) {
+    res.innerHTML = `<div class="error">${esc(msg)}</div>`;
+  }
+
+  loadStatus();
+</script>
+</body>
+</html>

@@ -14,8 +14,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -23,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/KidCarmi/digital-ghost/internal/api"
 	"github.com/KidCarmi/digital-ghost/internal/capture"
 	"github.com/KidCarmi/digital-ghost/internal/config"
 	"github.com/KidCarmi/digital-ghost/internal/defaults"
@@ -158,9 +161,12 @@ func run() error {
 	governor := inference.NewGovernor(cfg.ResourceBudget, logger)
 	defer governor.Close()
 
-	// Storage setup (using stub DB for architecture scaffold).
-	var db stubLanceDB
-	store := storage.NewStore(encryptor, &db, cfg.Storage.DataDir, logger)
+	// Storage setup — flat JSON file store (one encrypted file per node).
+	db, err := storage.NewJSONStore(cfg.Storage.DataDir, encryptor, logger)
+	if err != nil {
+		return fmt.Errorf("initializing storage: %w", err)
+	}
+	store := storage.NewStore(encryptor, db, cfg.Storage.DataDir, logger)
 	defer store.Close()
 
 	coherenceChecker := graph.NewChecker(store, graph.CoherenceConfig{
@@ -183,6 +189,20 @@ func run() error {
 		"model", cfg.Inference.Model,
 		"fps", cfg.Capture.FPS,
 		"max_cpu_pct", cfg.ResourceBudget.MaxCPUPct)
+
+	// Start the local web search UI.
+	apiCtx, apiCancel := context.WithCancel(context.Background())
+	defer apiCancel()
+	go func() {
+		<-stopCh
+		apiCancel()
+	}()
+	apiServer := api.New(store, ollamaClient, cfg.Inference.Model, logger)
+	go func() {
+		if err := apiServer.Run(apiCtx); err != nil {
+			logger.Warn("API server stopped", "error", err)
+		}
+	}()
 
 	go runCaptureLoop(cfg, gate, frameQueue, stopCh, logger)
 	go runInferenceLoop(cfg, governor, ollamaClient, frameQueue, coherenceChecker, store, stopCh, logger)
@@ -277,9 +297,13 @@ func runInferenceLoop(
 			continue
 		}
 
-		// TODO: Compute embedding via Ollama nomic-embed-text API, then coherence check.
-		// For now: stub embedding for architecture scaffold.
-		var embedding []float32
+		// Compute embedding for semantic search and coherence check.
+		embedCtx, embedCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Inference.TimeoutSec)*time.Second)
+		embedding, embedErr := client.Embed(embedCtx, result.Description)
+		embedCancel()
+		if embedErr != nil {
+			logger.Debug("embedding failed (non-fatal); storing without vector", "error", embedErr)
+		}
 
 		coherenceScore, err := coherence.Check(context.Background(), embedding)
 		if err != nil {
@@ -298,7 +322,12 @@ func runInferenceLoop(
 
 		// Store the node.
 		var nodeID [16]byte
-		// TODO: generate proper UUID v4.
+		if _, err := io.ReadFull(rand.Reader, nodeID[:]); err != nil {
+			logger.Warn("UUID generation failed", "error", err)
+			continue
+		}
+		nodeID[6] = (nodeID[6] & 0x0f) | 0x40 // version 4
+		nodeID[8] = (nodeID[8] & 0x3f) | 0x80 // variant bits
 		node := &storage.MemoryNode{
 			ID:              nodeID,
 			CapturedAt:      frame.CapturedAt,
@@ -319,8 +348,11 @@ func runInferenceLoop(
 
 func runWipe(cfg *config.Config, enc *storage.Encryptor, km *storage.KeyManager, logger *slog.Logger) error {
 	logger.Info("WIPE: starting permanent data destruction")
-	var db stubLanceDB
-	store := storage.NewStore(enc, &db, cfg.Storage.DataDir, logger)
+	db, err := storage.NewJSONStore(cfg.Storage.DataDir, enc, logger)
+	if err != nil {
+		return fmt.Errorf("opening storage for wipe: %w", err)
+	}
+	store := storage.NewStore(enc, db, cfg.Storage.DataDir, logger)
 	rm := storage.NewRetentionManager(store, km, cfg.Storage.DataDir, cfg.Storage.RetentionDays, cfg.Storage.SecureDelete, logger)
 	return rm.WipeAll(context.Background())
 }
@@ -362,21 +394,3 @@ func ensureDefaultBlocklist(path string) error {
 	return nil
 }
 
-// stubLanceDB is a no-op implementation of storage.lanceDBConn for the architecture scaffold.
-// Replace with the real LanceDB client in production.
-type stubLanceDB struct{}
-
-func (s *stubLanceDB) WriteRecord(_ context.Context, _ string, _ [16]byte, _ time.Time, _ []byte) error {
-	return nil
-}
-func (s *stubLanceDB) ReadRecord(_ context.Context, _ string, _ [16]byte) ([]byte, time.Time, error) {
-	return nil, time.Time{}, nil
-}
-func (s *stubLanceDB) NearestNeighbors(_ context.Context, _ string, _ []float32, _ int) ([]graph.ScoredNode, error) {
-	return nil, nil
-}
-func (s *stubLanceDB) DeleteRecord(_ context.Context, _ string, _ [16]byte) error { return nil }
-func (s *stubLanceDB) ListOlderThan(_ context.Context, _ string, _ time.Time) ([][16]byte, error) {
-	return nil, nil
-}
-func (s *stubLanceDB) Close() error { return nil }
