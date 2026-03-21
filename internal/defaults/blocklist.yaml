@@ -1,0 +1,113 @@
+# Digital Ghost — Default Privacy Blocklist
+#
+# DG will NOT capture any frame where the active window or browser URL
+# matches any entry in this list. The blocklist is fail-closed: if this
+# file is missing or corrupt, ALL capture is halted.
+#
+# Users can add entries to ~/.config/digitalghost/blocklist.yaml which
+# is merged with this file at startup and on hot-reload (fsnotify).
+
+# ─── Password Managers ───────────────────────────────────────────────
+apps:
+  - "1Password"
+  - "1password"
+  - "Bitwarden"
+  - "bitwarden"
+  - "KeePass"
+  - "KeePassXC"
+  - "keepassxc"
+  - "Dashlane"
+  - "LastPass"
+  - "Keychain Access"      # macOS
+  - "gnome-keyring-daemon" # Linux
+  - "kwallet"              # KDE Linux
+  - "pinentry"             # GPG PIN entry
+  - "pinentry-gtk"
+  - "pinentry-qt"
+  - "pinentry-curses"
+  - "ssh-askpass"
+
+# ─── System Authentication ───────────────────────────────────────────
+auth_patterns:
+  - "sudo"
+  - "polkit"
+  - "pkttyagent"
+  - "pkexec"
+  - "gksu"
+  - "kdesudo"
+  - "UserAccountControlSettings" # Windows UAC
+  - "consent.exe"                # Windows UAC prompt
+
+# ─── Browser URL Patterns (regex) ────────────────────────────────────
+# Matched against the browser's URL bar via accessibility API
+url_patterns:
+  # Banking (broad match intentional — false positives preferred)
+  - "(?i)bank"
+  - "(?i)banking"
+  - "(?i)\\.hsbc\\."
+  - "(?i)\\.barclays\\."
+  - "(?i)\\.chase\\."
+  - "(?i)\\.wellsfargo\\."
+  - "(?i)\\.bofa\\."
+  - "(?i)\\.citibank\\."
+  - "(?i)\\.capitalone\\."
+  - "(?i)\\.schwab\\."
+  - "(?i)\\.fidelity\\."
+  - "(?i)\\.vanguard\\."
+  # Payments
+  - "(?i)paypal\\.com"
+  - "(?i)stripe\\.com/dashboard"
+  - "(?i)venmo\\.com"
+  - "(?i)cashapp\\.com"
+  - "(?i)wise\\.com"
+  # Tax / Government ID
+  - "(?i)\\.irs\\.gov"
+  - "(?i)\\.hmrc\\.gov\\.uk"
+  - "(?i)turbotax\\.com"
+  - "(?i)hrblock\\.com"
+  # Medical / Health
+  - "(?i)mychart\\.com"
+  - "(?i)epic\\.com"
+  - "(?i)healthgrades\\.com"
+  - "(?i)webmd\\.com/patient"
+  - "(?i)myhealth\\."
+  # Authentication flows (any domain)
+  - "(?i)/login"
+  - "(?i)/signin"
+  - "(?i)/auth"
+  - "(?i)/oauth"
+  - "(?i)/password"
+  - "(?i)/2fa"
+  - "(?i)/mfa"
+  - "(?i)/verify"
+  - "(?i)/reset-password"
+  - "(?i)/forgot-password"
+  # Email (all accounts treated as sensitive)
+  - "(?i)mail\\.google\\.com"
+  - "(?i)outlook\\.live\\.com"
+  - "(?i)outlook\\.office\\.com"
+  - "(?i)mail\\.yahoo\\.com"
+  - "(?i)proton\\.me"
+  - "(?i)protonmail\\.com"
+
+# ─── Window Title Patterns (regex) ───────────────────────────────────
+# Matched against the active window title
+title_patterns:
+  - "(?i)password"
+  - "(?i)passphrase"
+  - "(?i)secret"
+  - "(?i)private key"
+  - "(?i)login"
+  - "(?i)sign in"
+  - "(?i)authenticate"
+  - "(?i)\\.env"       # IDE with .env file open
+  - "(?i)credentials"
+  - "(?i)api.?key"
+  - "(?i)token"
+
+# ─── Input Field Detection ───────────────────────────────────────────
+# If the focused element is one of these ARIA roles or input types,
+# mask the entire window (not just the field) before capture.
+sensitive_input_roles:
+  - "password"    # <input type="password">
+  - "spinbutton"  # Often used for OTP fields

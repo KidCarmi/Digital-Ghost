@@ -186,12 +186,22 @@ func (c *Config) DataDirPath(subpath string) string {
 }
 
 func expandHome(path string) string {
-	if len(path) >= 2 && path[:2] == "~/" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return filepath.Join(home, path[2:])
+	if len(path) == 0 {
+		return path
 	}
-	return path
+	if path[0] != '~' {
+		return path
+	}
+	// Accept both ~/ (Unix) and ~\ (Windows), as well as bare ~
+	if len(path) > 1 && path[1] != '/' && path[1] != '\\' {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	if len(path) == 1 {
+		return home
+	}
+	return filepath.Join(home, path[2:])
 }

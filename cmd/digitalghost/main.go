@@ -25,6 +25,7 @@ import (
 
 	"github.com/KidCarmi/digital-ghost/internal/capture"
 	"github.com/KidCarmi/digital-ghost/internal/config"
+	"github.com/KidCarmi/digital-ghost/internal/defaults"
 	"github.com/KidCarmi/digital-ghost/internal/filter"
 	"github.com/KidCarmi/digital-ghost/internal/graph"
 	"github.com/KidCarmi/digital-ghost/internal/inference"
@@ -345,8 +346,9 @@ func makeChan(q *inference.Queue) chan<- *capture.Frame {
 	return ch
 }
 
-// ensureDefaultBlocklist copies the embedded default blocklist to path if it
-// doesn't already exist. This guarantees the file is present on first run.
+// ensureDefaultBlocklist writes the embedded default blocklist to path if it
+// doesn't already exist. This guarantees the file is present on first run
+// regardless of the working directory the binary is launched from.
 func ensureDefaultBlocklist(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil // already exists
@@ -354,13 +356,7 @@ func ensureDefaultBlocklist(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
-	src := filepath.Join("configs", "blocklist.yaml")
-	data, err := os.ReadFile(src)
-	if err != nil {
-		// Not fatal: the blocklist package will use hardcoded defaults.
-		return fmt.Errorf("reading bundled blocklist %s: %w", src, err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, defaults.Blocklist, 0600); err != nil {
 		return fmt.Errorf("writing default blocklist: %w", err)
 	}
 	return nil
