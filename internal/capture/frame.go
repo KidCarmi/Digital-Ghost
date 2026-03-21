@@ -50,6 +50,12 @@ type WindowContext struct {
 	BrowserURL       string
 	FocusedInputRole string
 	PID              int
+
+	// ActiveWindowRect is the bounding rectangle of the foreground window in
+	// image-local coordinates (already translated from virtual-screen coords).
+	// Used by the inference layer to crop the frame before VLM encoding.
+	// Zero value means the rect is unavailable; inference falls back to full frame.
+	ActiveWindowRect image.Rectangle
 }
 
 // HashFrame computes the perceptual hash of the frame's image.

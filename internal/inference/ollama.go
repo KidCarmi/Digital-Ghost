@@ -16,7 +16,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"image/jpeg"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -25,6 +27,7 @@ import (
 
 	"github.com/KidCarmi/digital-ghost/internal/capture"
 	"github.com/KidCarmi/digital-ghost/internal/config"
+	"github.com/KidCarmi/digital-ghost/internal/filter"
 )
 
 // InferenceResult is the output of a single VLM inference call.
@@ -65,30 +68,68 @@ type ollamaGenerateResponse struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// inferencePrompt is the prompt sent to the VLM.
-// Tuned to produce warm, personal memory notes that read like a thoughtful
-// human recall rather than a robotic screen description.
-// Uncertainty rules prevent fabrication: if the image is unclear, the model
-// must say so rather than guess.
-const inferencePrompt = `You're helping someone remember what they were doing. Write a short, warm memory note — like a friend describing what they noticed on the screen, in plain conversational English.
+// honesty rules are prepended to every class-specific prompt.
+const honestyRules = `Honesty rules (follow exactly):
+- Only describe what is clearly visible. If text is blurry or too small, say so — never guess.
+- If the screen is blank or loading, say "the screen seemed mostly blank" — don't invent content.
+- Use "it looked like" / "I could make out" when not fully certain.
+Skip: toolbars, window chrome, passwords, credentials, layout/colours.`
 
-CRITICAL — honesty rules (follow these exactly):
-- Only describe what you can actually see clearly. If text is blurry, small, or hard to read, say "there was some text I couldn't quite make out" rather than guessing what it said.
-- If the screen is mostly blank, a loading spinner, or unrecognisable, say "the screen seemed mostly blank or loading" — don't invent content.
-- Never name specific people, companies, or projects unless the name is clearly legible in the image.
-- Use phrases like "it looked like", "there seemed to be", "I could make out" when you're not fully certain.
+// classPrompts maps content classes to a focused description instruction.
+// Each prompt tells the VLM what to prioritise for that class of content.
+var classPrompts = map[filter.ContentClass]string{
+	filter.ClassWorkCode: `You're helping a developer remember what they were coding.
+Focus on:
+- Programming language and file/function/class names that are clearly visible
+- What the code does or what problem it's solving
+- Any visible error messages, test output, or terminal commands
 
-Focus on (only what's clearly visible):
+` + honestyRules + `
+
+Write 2-3 sentences. End with: TAGS: [comma-separated keywords]`,
+
+	filter.ClassWorkDocument: `You're helping someone remember a document they were reading or writing.
+Focus on:
+- Document title, section heading, or key topic
+- Main idea, argument, or content clearly visible on screen
+- Any names, dates, or specific terms that are legible
+
+` + honestyRules + `
+
+Write 2-3 sentences. End with: TAGS: [comma-separated keywords]`,
+
+	filter.ClassWorkResearch: `You're helping someone remember an article or research they were reading.
+Focus on:
+- Article or page title and its main claim or finding
+- Source or publication name if clearly visible
+- Key concepts, terms, or takeaways visible on screen
+
+` + honestyRules + `
+
+Write 2-3 sentences. End with: TAGS: [comma-separated keywords]`,
+
+	filter.ClassCommunication: `You're helping someone remember a conversation or message thread.
+Focus on:
+- Platform and general topic being discussed (not exact private messages)
+- Visible project, task, or decision being referenced
+- Who the conversation involves if names are clearly shown
+
+` + honestyRules + `
+
+Write 2-3 sentences. End with: TAGS: [comma-separated keywords]`,
+}
+
+// defaultPrompt is used for ClassUnknown, ClassSocial, and any class without
+// a specific prompt. Kept general and warm.
+const defaultPrompt = `You're helping someone remember what they were doing.
+Focus on:
 - What the person was actually doing or reading
-- The main topic, project, or task they seemed to be working on
-- Any meaningful text, code, names, or ideas that were clearly visible
+- The main topic, project, or task visible on screen
+- Any meaningful text, names, or ideas that were clearly visible
 
-Skip entirely:
-- Toolbars, window chrome, UI widgets, and menu bars
-- Layout, colors, and visual design
-- Anything that looks like passwords, credentials, or private data
+` + honestyRules + `
 
-Write 2-3 warm, natural sentences — like a memory you'd want to find later. End with: TAGS: [comma-separated keywords]`
+Write 2-3 warm, natural sentences. End with: TAGS: [comma-separated keywords]`
 
 // NewClient creates an Ollama client from configuration.
 func NewClient(cfg config.InferenceConfig, logger *slog.Logger) *Client {
@@ -101,21 +142,23 @@ func NewClient(cfg config.InferenceConfig, logger *slog.Logger) *Client {
 	}
 }
 
-// buildInferencePrompt constructs a context-enriched prompt for the VLM.
-// Injecting app name, window title, and URL gives the model grounding that
-// pixels alone cannot provide (e.g. which Python version, which GitHub repo,
-// which Slack channel) and produces significantly more specific descriptions.
-func buildInferencePrompt(frame *capture.Frame) string {
+// buildInferencePrompt constructs a context-enriched, class-specific prompt for the VLM.
+// Injecting app name, window title, and URL gives the model grounding that pixels alone
+// cannot provide (e.g. which repo, which Slack channel). The class-specific body then
+// directs the model to prioritise the most useful details for that content type.
+func buildInferencePrompt(frame *capture.Frame, class filter.ContentClass) string {
 	var sb strings.Builder
+
+	// Window metadata preamble — grounding the model before it sees the image.
 	if frame.WindowCtx.ProcessName != "" || frame.WindowCtx.WindowTitle != "" || frame.WindowCtx.BrowserURL != "" {
-		sb.WriteString("Context about what's on screen:\n")
+		sb.WriteString("Context:\n")
 		if frame.WindowCtx.ProcessName != "" {
 			sb.WriteString("  App: ")
 			sb.WriteString(frame.WindowCtx.ProcessName)
 			sb.WriteString("\n")
 		}
 		if frame.WindowCtx.WindowTitle != "" {
-			sb.WriteString("  Window title: ")
+			sb.WriteString("  Window: ")
 			sb.WriteString(frame.WindowCtx.WindowTitle)
 			sb.WriteString("\n")
 		}
@@ -126,7 +169,13 @@ func buildInferencePrompt(frame *capture.Frame) string {
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(inferencePrompt)
+
+	// Class-specific body.
+	body, ok := classPrompts[class]
+	if !ok {
+		body = defaultPrompt
+	}
+	sb.WriteString(body)
 	return sb.String()
 }
 
@@ -135,14 +184,21 @@ func buildInferencePrompt(frame *capture.Frame) string {
 //
 // ctx should have a deadline set (via the Governor or the caller).
 func (c *Client) Infer(ctx context.Context, frame *capture.Frame) (*InferenceResult, error) {
-	imgBase64, err := encodeFrameJPEG(frame)
+	// Classify the frame so we can pick the right prompt and crop correctly.
+	contentClass := filter.Classify(filter.ClassifierInput{
+		ProcessName: frame.WindowCtx.ProcessName,
+		WindowTitle: frame.WindowCtx.WindowTitle,
+		BrowserURL:  frame.WindowCtx.BrowserURL,
+	})
+
+	imgBase64, err := encodeFrameForVLM(frame)
 	if err != nil {
 		return nil, fmt.Errorf("encoding frame: %w", err)
 	}
 
 	reqBody := ollamaGenerateRequest{
 		Model:  c.cfg.Model,
-		Prompt: buildInferencePrompt(frame),
+		Prompt: buildInferencePrompt(frame, contentClass),
 		Images: []string{imgBase64},
 		Stream: false,
 		// temperature:0 makes the model deterministic and anchors it to the
@@ -252,16 +308,69 @@ func parseDescriptionAndTags(response string) (description string, tags []string
 	return description, tags
 }
 
-// encodeFrameJPEG encodes the frame's image as a base64 JPEG string.
-func encodeFrameJPEG(frame *capture.Frame) (string, error) {
+// encodeFrameForVLM prepares a frame for the Ollama multimodal API.
+//
+// llava:7b's CLIP vision encoder resizes every input to 336×336 internally.
+// Sending a full 1920×1080 JPEG just means CLIP does a brutal 5.7× squash that
+// makes all text and UI elements unreadable. We do the downscale ourselves at
+// 672×378 (2× CLIP resolution, 16:9 aspect) so the 2× step is clean and text
+// remains legible. We also crop to the active window first so the VLM sees the
+// relevant content at full target width instead of a tiny fraction of the screen.
+//
+// Format: PNG (lossless) — avoids JPEG block artifacts on text edges.
+func encodeFrameForVLM(frame *capture.Frame) (string, error) {
 	if frame.Image == nil {
 		return "", fmt.Errorf("frame has nil image")
 	}
+
+	src := frame.Image
+
+	// Crop to the active window if the rect is valid and fits within the image.
+	if r := frame.WindowCtx.ActiveWindowRect; r.Dx() > 32 && r.Dy() > 32 {
+		cropped := r.Intersect(src.Bounds())
+		if cropped.Dx() > 32 && cropped.Dy() > 32 {
+			if rgba, ok := src.(*image.RGBA); ok {
+				src = rgba.SubImage(cropped) // zero-copy view
+			}
+		}
+	}
+
+	// Downscale to 672×378 if the source is larger.
+	const targetW, targetH = 672, 378
+	if src.Bounds().Dx() > targetW || src.Bounds().Dy() > targetH {
+		src = downscaleNearest(src, targetW, targetH)
+	}
+
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, frame.Image, &jpeg.Options{Quality: 85}); err != nil {
-		return "", fmt.Errorf("JPEG encoding: %w", err)
+	if err := png.Encode(&buf, src); err != nil {
+		return "", fmt.Errorf("PNG encoding: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+// downscaleNearest resizes src to exactly w×h using nearest-neighbour sampling.
+// At 2–3× reduction ratios this is fast and preserves text legibility well —
+// the only quality difference vs. Lanczos/CatmullRom is mild aliasing on
+// diagonal lines, which is irrelevant for UI screenshots.
+func downscaleNearest(src image.Image, w, h int) *image.RGBA {
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	sb := src.Bounds()
+	scaleX := float64(sb.Dx()) / float64(w)
+	scaleY := float64(sb.Dy()) / float64(h)
+	for y := 0; y < h; y++ {
+		srcY := sb.Min.Y + int(float64(y)*scaleY)
+		for x := 0; x < w; x++ {
+			srcX := sb.Min.X + int(float64(x)*scaleX)
+			r, g, b, a := src.At(srcX, srcY).RGBA()
+			dst.SetRGBA(x, y, color.RGBA{
+				R: uint8(r >> 8),
+				G: uint8(g >> 8),
+				B: uint8(b >> 8),
+				A: uint8(a >> 8),
+			})
+		}
+	}
+	return dst
 }
 
 // ollamaEmbedRequest matches the Ollama /api/embeddings endpoint schema.

@@ -364,6 +364,33 @@ func runInferenceLoop(
 			return // stopCh closed.
 		}
 
+		// ── Pre-inference gates (cheap, no I/O) ───────────────────────────────
+		// These run BEFORE governor.Acquire() to avoid consuming rate-limit tokens
+		// on frames that will be discarded anyway.
+
+		// Gate 1: Hard dwell threshold — skip transient glances (alt-tab flashes).
+		if frame.DwellSeconds < cfg.SemanticFilter.MinDwellSeconds {
+			logger.Debug("frame skipped: insufficient dwell",
+				"dwell_sec", frame.DwellSeconds,
+				"min", cfg.SemanticFilter.MinDwellSeconds)
+			continue
+		}
+
+		// Gate 2: Content class pre-filter — skip entertainment and system UI.
+		// These classes have classWeights of 0.1 / 0.2 and almost always fail the
+		// engagement threshold after inference anyway; no point burning GPU on them.
+		preClass := filter.Classify(filter.ClassifierInput{
+			ProcessName: frame.WindowCtx.ProcessName,
+			WindowTitle: frame.WindowCtx.WindowTitle,
+			BrowserURL:  frame.WindowCtx.BrowserURL,
+		})
+		if preClass == filter.ClassEntertainment || preClass == filter.ClassSystemUI {
+			logger.Debug("frame skipped pre-inference: low content class",
+				"class", preClass,
+				"process", frame.WindowCtx.ProcessName)
+			continue
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Inference.TimeoutSec)*time.Second)
 
 		// Wait for resource budget.
@@ -373,17 +400,6 @@ func runInferenceLoop(
 				return
 			}
 			logger.Warn("governor acquire error", "error", err)
-			continue
-		}
-
-		// Hard dwell threshold — skip frames where the window was active for less
-		// than MinDwellSeconds. This avoids spending GPU time on transient glances
-		// (e.g. alt-tab flashes) before engagement scoring runs.
-		if frame.DwellSeconds < cfg.SemanticFilter.MinDwellSeconds {
-			cancel()
-			logger.Debug("frame skipped: insufficient dwell",
-				"dwell_sec", frame.DwellSeconds,
-				"min", cfg.SemanticFilter.MinDwellSeconds)
 			continue
 		}
 
@@ -405,13 +421,9 @@ func runInferenceLoop(
 			TypedWithinSeconds:    frame.SecondsSinceInput,
 			ScrolledWithinSeconds: 0,
 			ClickedWithinSeconds:  0,
-			ContentClass: filter.Classify(filter.ClassifierInput{
-				ProcessName: frame.WindowCtx.ProcessName,
-				WindowTitle: frame.WindowCtx.WindowTitle,
-				BrowserURL:  frame.WindowCtx.BrowserURL,
-			}),
-			ViewCount:  1,
-			CapturedAt: frame.CapturedAt,
+			ContentClass:          preClass, // already computed above
+			ViewCount:             1,
+			CapturedAt:            frame.CapturedAt,
 		}
 		score := filter.EngagementScore(signals)
 

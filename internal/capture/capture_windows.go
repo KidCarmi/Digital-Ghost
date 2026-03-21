@@ -64,6 +64,7 @@ var (
 	procEnumChildWindows            = user32.NewProc("EnumChildWindows")
 	procGetClassNameW               = user32.NewProc("GetClassNameW")
 	procSendMessageW                = user32.NewProc("SendMessageW")
+	procGetWindowRect               = user32.NewProc("GetWindowRect")
 )
 
 const (
@@ -94,6 +95,24 @@ type bitmapInfoHeader struct {
 type lastInputInfo struct {
 	cbSize uint32
 	dwTime uint32
+}
+
+// winRECT mirrors the Win32 RECT structure used by GetWindowRect.
+type winRECT struct{ Left, Top, Right, Bottom int32 }
+
+// queryActiveWindowRect returns the bounding rectangle of the foreground window
+// in virtual-screen coordinates. Returns an empty rectangle on any error.
+func queryActiveWindowRect() image.Rectangle {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return image.Rectangle{}
+	}
+	var r winRECT
+	ret, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	if ret == 0 {
+		return image.Rectangle{}
+	}
+	return image.Rect(int(r.Left), int(r.Top), int(r.Right), int(r.Bottom))
 }
 
 // monitorInfo holds a monitor handle and its bounding rectangle.
@@ -369,13 +388,32 @@ func (ml *monitorLoop) captureFrame() (*Frame, error) {
 	}
 
 	frame := &Frame{
-		Image:             img,
-		CapturedAt:        now,
-		WindowCtx:         WindowContext(result.WindowCtx),
+		Image:      img,
+		CapturedAt: now,
+		WindowCtx: WindowContext{
+			ProcessName:      result.WindowCtx.ProcessName,
+			WindowTitle:      result.WindowCtx.WindowTitle,
+			BrowserURL:       result.WindowCtx.BrowserURL,
+			FocusedInputRole: result.WindowCtx.FocusedInputRole,
+			PID:              result.WindowCtx.PID,
+		},
 		DisplayIndex:      ml.displayIdx,
 		DwellSeconds:      dwellSeconds,
 		SecondsSinceInput: sinceInput,
 	}
+
+	// Translate the active window's virtual-screen rect into image-local coords.
+	// Virtual screen origin for this monitor is ml.mon.rect.Min; the captured
+	// image's pixel (0,0) corresponds to that virtual-screen point.
+	if winRect := queryActiveWindowRect(); winRect.Dx() > 0 && winRect.Dy() > 0 {
+		translated := winRect.Sub(ml.mon.rect.Min)
+		imageBounds := img.Bounds()
+		clamped := translated.Intersect(imageBounds)
+		if clamped.Dx() > 32 && clamped.Dy() > 32 {
+			frame.WindowCtx.ActiveWindowRect = clamped
+		}
+	}
+
 	if err := HashFrame(frame); err != nil {
 		c.logger.Debug("pHash failed", "display", ml.displayIdx, "error", err)
 	}
