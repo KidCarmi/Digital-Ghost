@@ -282,20 +282,60 @@ func isCommunication(url, title, proc string) bool {
 
 func isSystemUI(url, title, proc string) bool {
 	procs := []string{
-		"nautilus", "thunar", "dolphin", "nemo", "pcmanfm", // File managers
-		"gnome-control-center", "systemsettings5",           // System settings
-		"gnome-software", "discover",                         // App stores
+		// Linux file managers
+		"nautilus", "thunar", "dolphin", "nemo", "pcmanfm",
+		// Linux system UI
+		"gnome-control-center", "systemsettings5",
+		"gnome-software", "discover",
 		"synaptic",
 		"gnome-disks",
 		"gparted",
 		"gnome-system-monitor", "ksysguard",
-		"finder",       // macOS
-		"explorer.exe", // Windows
+		// macOS
+		"finder",
+		// Windows Explorer / shell
+		"explorer",
+		// Windows shell overlay processes — these produce the notification center,
+		// Start menu, Action Center, search overlay, and lock screen. The VLM
+		// consistently hallucinates "video game interfaces" from their translucent
+		// layered UI, so we block them entirely.
+		"shellexperiencehost",
+		"startmenuexperiencehost",
+		"searchhost",
+		"searchapp",
+		"searchui",
+		"lockapp",
+		"logonui",
+		"applicationframehost",
+		"runtimebroker",
+		"systemsettings",
+		"settingssynchost",
+		"dwm",         // Desktop Window Manager
+		"taskmgr",     // Task Manager
+		"regedit",     // Registry Editor
+		"msiexec",     // Installer UI
+		"winlogon",    // Windows logon
+		"userinit",    // Windows logon shell
 	}
 	for _, p := range procs {
 		if strings.Contains(proc, p) {
 			return true
 		}
 	}
+
+	// Window title signals — catch system overlays that don't have a distinctive process name.
+	titleSignals := []string{
+		"notification center",
+		"action center",
+		"windows security",
+		"windows update",
+		"task manager",
+	}
+	for _, t := range titleSignals {
+		if strings.Contains(title, t) {
+			return true
+		}
+	}
+
 	return false
 }
