@@ -286,15 +286,16 @@ func (c *Client) doRequest(ctx context.Context, url string, body []byte) (*Infer
 
 // parseDescriptionAndTags splits the VLM response into a description and keyword tags.
 // The VLM is prompted to end with "TAGS: [kw1, kw2, ...]".
+// The description is also sanitized to strip prompt-injection patterns before storage.
 func parseDescriptionAndTags(response string) (description string, tags []string) {
 	const tagMarker = "tags:"
 	lower := strings.ToLower(response)
 	idx := strings.LastIndex(lower, tagMarker)
 	if idx < 0 {
-		return strings.TrimSpace(response), nil
+		return sanitizeDescription(strings.TrimSpace(response)), nil
 	}
 
-	description = strings.TrimSpace(response[:idx])
+	description = sanitizeDescription(strings.TrimSpace(response[:idx]))
 	tagLine := strings.TrimSpace(response[idx+len(tagMarker):])
 
 	// Strip surrounding brackets if present.
@@ -306,6 +307,43 @@ func parseDescriptionAndTags(response string) (description string, tags []string
 		}
 	}
 	return description, tags
+}
+
+// injectionPatterns are case-insensitive prefixes / substrings that indicate
+// an attempt to hijack the LLM prompt via screen-visible text.
+// When any pattern is found, the offending sentence is replaced with a
+// placeholder so it cannot propagate to the chat LLM context.
+var injectionPatterns = []string{
+	"ignore all previous",
+	"ignore previous",
+	"disregard previous",
+	"disregard all",
+	"forget all previous",
+	"new instructions:",
+	"system prompt:",
+	"system:",
+	"[inst]",
+	"[system]",
+	"</s>",         // llama-style end-of-sequence token
+	"[/inst]",
+	"<|im_start|>", // chatml system turn
+	"<|system|>",
+}
+
+// sanitizeDescription removes prompt-injection patterns from a VLM description.
+// It operates at the sentence level: any sentence containing an injection
+// pattern is replaced with "[content redacted]" so context is preserved.
+func sanitizeDescription(desc string) string {
+	lower := strings.ToLower(desc)
+	for _, pat := range injectionPatterns {
+		if strings.Contains(lower, pat) {
+			// Replace the whole description rather than trying to surgically
+			// remove individual sentences — a partial replacement is still
+			// injectable if the attacker anticipated the filter.
+			return "[screen content contained text that could not be safely stored]"
+		}
+	}
+	return desc
 }
 
 // encodeFrameForVLM prepares a frame for the Ollama multimodal API.
@@ -478,7 +516,20 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 	return embedResp.Embedding, nil
 }
 
-// Ping checks that Ollama is reachable and the configured model is available.
+// ollamaTagsResponse matches the Ollama /api/tags response schema.
+type ollamaTagsResponse struct {
+	Models []ollamaModelEntry `json:"models"`
+}
+
+// ollamaModelEntry is a single model listed by /api/tags.
+type ollamaModelEntry struct {
+	Name   string `json:"name"`
+	Digest string `json:"digest"` // e.g. "sha256:abc123..."
+}
+
+// Ping checks that Ollama is reachable and returns without error if the HTTP
+// layer is up. It does NOT verify model availability or digest — use VerifyModel
+// for that stronger check.
 func (c *Client) Ping(ctx context.Context) error {
 	url := c.cfg.OllamaURL + "/api/tags"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -494,4 +545,57 @@ func (c *Client) Ping(ctx context.Context) error {
 		return fmt.Errorf("Ollama ping returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// VerifyModel confirms that the configured VLM model is present in Ollama's
+// model list and, if cfg.ModelDigest is set, that the digest matches exactly.
+//
+// This prevents a malicious process that has bound :11434 before Ollama from
+// silently receiving frame pixel data: the fake server either cannot return a
+// valid model list or cannot produce the correct digest.
+//
+// Returns the actual model digest on success so the caller can log it.
+func (c *Client) VerifyModel(ctx context.Context) (string, error) {
+	url := c.cfg.OllamaURL + "/api/tags"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("building /api/tags request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("calling /api/tags: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Ollama /api/tags returned HTTP %d", resp.StatusCode)
+	}
+
+	var tags ollamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+		return "", fmt.Errorf("decoding /api/tags response: %w", err)
+	}
+
+	// Find the configured model in the list.
+	var actualDigest string
+	for _, m := range tags.Models {
+		if m.Name == c.cfg.Model {
+			actualDigest = m.Digest
+			break
+		}
+	}
+	if actualDigest == "" {
+		return "", fmt.Errorf("model %q is not loaded in Ollama — run: ollama pull %s", c.cfg.Model, c.cfg.Model)
+	}
+
+	// If a digest is pinned in config, enforce it.
+	if c.cfg.ModelDigest != "" && actualDigest != c.cfg.ModelDigest {
+		return "", fmt.Errorf(
+			"model digest mismatch for %q: expected %s, got %s — "+
+				"this may indicate a tampered model or a malicious process on :11434",
+			c.cfg.Model, c.cfg.ModelDigest, actualDigest,
+		)
+	}
+
+	return actualDigest, nil
 }

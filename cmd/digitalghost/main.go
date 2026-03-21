@@ -138,7 +138,7 @@ func run() error {
 	}
 
 	// ── Step 4: Consent check ─────────────────────────────────────────────────
-	consentMgr := tray.New(cfg.Storage.DataDir, version)
+	consentMgr := tray.New(cfg.Storage.DataDir, version, km.Key())
 	if !consentMgr.IsConsentGranted() {
 		logger.Info("no consent record found; starting consent flow")
 		if err := consentMgr.RequestConsent(); err != nil {
@@ -186,7 +186,25 @@ func run() error {
 		logger.Warn("Ollama not reachable at startup; inference will be unavailable until Ollama starts",
 			"url", cfg.Inference.OllamaURL, "model", cfg.Inference.Model)
 	} else {
-		logger.Info("Ollama connected", "url", cfg.Inference.OllamaURL, "model", cfg.Inference.Model)
+		// Ollama is up — verify the model is loaded and the digest matches the
+		// pinned value (if one is configured). This blocks a malicious process
+		// that has bound :11434 before Ollama from silently receiving frame data.
+		verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer verifyCancel()
+		digest, err := ollamaClient.VerifyModel(verifyCtx)
+		if err != nil {
+			// If a digest is pinned, mismatch is fatal — refuse to run.
+			if cfg.Inference.ModelDigest != "" {
+				return fmt.Errorf("model verification failed: %w", err)
+			}
+			logger.Warn("model verification warning (no digest pinned — set inference.model_digest to harden)",
+				"error", err)
+		} else {
+			logger.Info("Ollama model verified",
+				"model", cfg.Inference.Model,
+				"digest", digest,
+				"pinned", cfg.Inference.ModelDigest != "")
+		}
 	}
 
 	// ── Step 7: Initialize components ────────────────────────────────────────

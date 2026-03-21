@@ -43,14 +43,73 @@ type JSONStore struct {
 	mu        sync.RWMutex
 }
 
+// indexSentinelID is the fixed NodeID used as authenticated context when
+// encrypting the index file. It must never be reused for a real MemoryNode.
+var indexSentinelID = [16]byte{
+	0x44, 0x47, 0x2d, 0x49, 0x44, 0x58, // "DG-IDX"
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+}
+
+// indexSentinelTime is the fixed timestamp used as authenticated context for
+// the index file HMAC. Using a constant means we can always reconstruct the
+// EncryptedRecord needed by Open() without storing extra metadata.
+var indexSentinelTime = time.Unix(0, 0).UTC()
+
 // NewJSONStore creates a JSONStore rooted at dir/memories/.
 // The directory is created if it does not exist.
+// If a plaintext index.json exists from a previous version, it is migrated
+// to the encrypted index.enc format on first open.
 func NewJSONStore(dir string, enc *Encryptor, logger *slog.Logger) (*JSONStore, error) {
 	memoriesDir := filepath.Join(dir, "memories")
 	if err := os.MkdirAll(memoriesDir, 0700); err != nil {
 		return nil, fmt.Errorf("creating memories directory: %w", err)
 	}
-	return &JSONStore{dir: memoriesDir, encryptor: enc, logger: logger}, nil
+	s := &JSONStore{dir: memoriesDir, encryptor: enc, logger: logger}
+
+	// Migrate plaintext index.json → encrypted index.enc if needed.
+	if err := s.migrateIndexIfNeeded(); err != nil {
+		logger.Warn("index migration failed (will rebuild on next write)", "error", err)
+	}
+	return s, nil
+}
+
+// migrateIndexIfNeeded converts a legacy plaintext index.json to the
+// encrypted index.enc format, then removes the plaintext file.
+func (s *JSONStore) migrateIndexIfNeeded() error {
+	plainPath := filepath.Join(s.dir, "index.json")
+	encPath := s.indexEncPath()
+
+	// Nothing to migrate if the plaintext file doesn't exist.
+	if _, err := os.Stat(plainPath); os.IsNotExist(err) {
+		return nil
+	}
+	// Encrypted index already exists — plaintext is a stale artifact, remove it.
+	if _, err := os.Stat(encPath); err == nil {
+		s.logger.Info("removing stale plaintext index.json (encrypted index.enc exists)")
+		return os.Remove(plainPath)
+	}
+
+	// Read the plaintext index.
+	data, err := os.ReadFile(plainPath)
+	if err != nil {
+		return fmt.Errorf("reading plaintext index: %w", err)
+	}
+	var entries []indexEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return fmt.Errorf("parsing plaintext index: %w", err)
+	}
+
+	// Write the encrypted version.
+	if err := s.saveIndexEntries(entries); err != nil {
+		return fmt.Errorf("writing encrypted index: %w", err)
+	}
+
+	// Remove the plaintext file.
+	if err := os.Remove(plainPath); err != nil {
+		s.logger.Warn("could not remove plaintext index.json after migration", "error", err)
+	}
+	s.logger.Info("index.json migrated to encrypted index.enc", "entries", len(entries))
+	return nil
 }
 
 // -- lanceDBConn interface --------------------------------------------------
@@ -270,35 +329,63 @@ func (s *JSONStore) nodePath(id [16]byte) string {
 	return filepath.Join(s.dir, hex.EncodeToString(id[:])+".enc")
 }
 
-func (s *JSONStore) indexPath() string {
-	return filepath.Join(s.dir, "index.json")
+// indexEncPath returns the path to the encrypted index file.
+func (s *JSONStore) indexEncPath() string {
+	return filepath.Join(s.dir, "index.enc")
 }
 
+// loadIndex reads and decrypts the index file.
+// Returns nil (empty index) if the file does not exist yet.
 func (s *JSONStore) loadIndex() ([]indexEntry, error) {
-	data, err := os.ReadFile(s.indexPath())
+	data, err := os.ReadFile(s.indexEncPath())
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading encrypted index: %w", err)
 	}
+
+	rec := &EncryptedRecord{
+		NodeID:    indexSentinelID,
+		Timestamp: indexSentinelTime,
+		Data:      data,
+	}
+	plaintext, err := s.encryptor.Open(rec)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting index: %w", err)
+	}
+
 	var entries []indexEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, err
+	if err := json.Unmarshal(plaintext, &entries); err != nil {
+		return nil, fmt.Errorf("parsing index: %w", err)
 	}
 	return entries, nil
 }
 
+// saveIndex encrypts entries and writes them atomically to index.enc.
 func (s *JSONStore) saveIndex(entries []indexEntry) error {
-	data, err := json.MarshalIndent(entries, "", "  ")
+	return s.saveIndexEntries(entries)
+}
+
+// saveIndexEntries is the internal implementation shared by saveIndex and
+// migrateIndexIfNeeded (the latter runs before s.mu is held).
+func (s *JSONStore) saveIndexEntries(entries []indexEntry) error {
+	plaintext, err := json.Marshal(entries)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling index: %w", err)
 	}
-	tmp := s.indexPath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
+
+	rec, err := s.encryptor.Seal(indexSentinelID, indexSentinelTime, plaintext)
+	if err != nil {
+		return fmt.Errorf("encrypting index: %w", err)
 	}
-	return os.Rename(tmp, s.indexPath())
+
+	// Atomic write: write to .tmp then rename.
+	tmp := s.indexEncPath() + ".tmp"
+	if err := os.WriteFile(tmp, rec.Data, 0600); err != nil {
+		return fmt.Errorf("writing encrypted index: %w", err)
+	}
+	return os.Rename(tmp, s.indexEncPath())
 }
 
 func (s *JSONStore) appendIndex(nodeID [16]byte, ts time.Time) error {

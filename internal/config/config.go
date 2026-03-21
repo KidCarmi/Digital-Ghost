@@ -49,6 +49,13 @@ type ResourceBudgetConfig struct {
 type InferenceConfig struct {
 	OllamaURL  string `yaml:"ollama_url"`
 	Model      string `yaml:"model"`
+	// ModelDigest is the expected SHA-256 digest of the VLM model blob as
+	// reported by Ollama's /api/tags endpoint (e.g. "sha256:abc123...").
+	// When set, DG verifies the digest at startup and refuses to run if it
+	// does not match — preventing a malicious process that has hijacked :11434
+	// from receiving frame data.
+	// Leave empty to skip digest pinning (useful in development).
+	ModelDigest string `yaml:"model_digest"`
 	// EmbedModel is the Ollama model used for text embeddings.
 	// Defaults to "nomic-embed-text" which produces better semantic search
 	// results than using the VLM (llava:7b) for embeddings.
@@ -195,8 +202,11 @@ func (c *Config) validate() error {
 	if c.Inference.OllamaURL == "" {
 		return fmt.Errorf("inference.ollama_url must not be empty")
 	}
-	if u, err := url.Parse(c.Inference.OllamaURL); err != nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") {
-		return fmt.Errorf("inference.ollama_url must point to localhost (got %q): Digital Ghost is air-gapped and must not send data to remote hosts", c.Inference.OllamaURL)
+	if u, err := url.Parse(c.Inference.OllamaURL); err != nil ||
+		u.Scheme != "http" ||
+		(u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") {
+		return fmt.Errorf("inference.ollama_url must be http://127.0.0.1:<port> or http://localhost:<port> (got %q): "+
+			"Digital Ghost is air-gapped and must not send data to remote hosts", c.Inference.OllamaURL)
 	}
 	if c.Inference.Model == "" {
 		return fmt.Errorf("inference.model must not be empty")

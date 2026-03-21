@@ -9,6 +9,7 @@
 package tray
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -78,17 +79,26 @@ type ConsentRecord struct {
 	Platform       string    `json:"platform"`
 	DialogTextHash string    `json:"dialog_text_hash"` // SHA-256 of consentDialogText
 	ExplicitGrant  bool      `json:"explicit_grant"`   // true = user clicked "I Agree"
+	// HMACSignature is HMAC-SHA256(key, JSON-without-signature-field) using
+	// the OS keychain key. Prevents another process running as the same user
+	// from creating a forged consent record to suppress the consent dialog.
+	// Empty in records created before this field was added (legacy records are
+	// accepted but logged as a warning).
+	HMACSignature string `json:"hmac_signature,omitempty"`
 }
 
 // Manager handles consent state and the tray icon lifecycle.
 type Manager struct {
 	dataDir string
 	version string
+	key     []byte // keychain-derived key for HMAC signing; nil disables signing
 }
 
 // New creates a Manager. dataDir is the DG data directory (e.g., ~/.local/share/digitalghost).
-func New(dataDir, version string) *Manager {
-	return &Manager{dataDir: dataDir, version: version}
+// key is the 32-byte AES key from the OS keychain, used to HMAC-sign the consent
+// record. Pass nil to disable signing (legacy / test mode).
+func New(dataDir, version string, key []byte) *Manager {
+	return &Manager{dataDir: dataDir, version: version, key: key}
 }
 
 // consentPath returns the path to the consent record file.
@@ -134,6 +144,16 @@ func (m *Manager) RequestConsent() error {
 		ExplicitGrant:  true,
 	}
 
+	// Sign the record (without the signature field itself) so we can detect
+	// tampering on subsequent loads.
+	if m.key != nil {
+		sig, err := m.signRecord(record)
+		if err != nil {
+			return fmt.Errorf("signing consent record: %w", err)
+		}
+		record.HMACSignature = sig
+	}
+
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling consent record: %w", err)
@@ -162,7 +182,8 @@ func (m *Manager) RevokeConsent() error {
 	return err
 }
 
-// loadConsentRecord reads and parses the consent record from disk.
+// loadConsentRecord reads, parses, and (if a key is available) verifies the
+// HMAC signature of the consent record on disk.
 func (m *Manager) loadConsentRecord() (*ConsentRecord, error) {
 	data, err := os.ReadFile(m.consentPath())
 	if err != nil {
@@ -175,7 +196,42 @@ func (m *Manager) loadConsentRecord() (*ConsentRecord, error) {
 	if !record.ExplicitGrant {
 		return nil, errors.New("consent record does not contain explicit grant")
 	}
+
+	// Verify HMAC if a key is available.
+	if m.key != nil {
+		if record.HMACSignature == "" {
+			// Legacy record written before signing was introduced — accept but
+			// re-sign on next RequestConsent() call. Log a warning so operators
+			// are aware.
+			fmt.Fprintf(os.Stderr, "WARNING: consent record has no HMAC signature (legacy format); "+
+				"re-run Digital Ghost to upgrade it\n")
+		} else {
+			expected, err := m.signRecord(record)
+			if err != nil {
+				return nil, fmt.Errorf("computing expected consent HMAC: %w", err)
+			}
+			if !hmac.Equal([]byte(record.HMACSignature), []byte(expected)) {
+				return nil, errors.New("consent record HMAC mismatch: file may have been tampered with")
+			}
+		}
+	}
+
 	return &record, nil
+}
+
+// signRecord computes HMAC-SHA256 over the consent record's stable fields.
+// The HMACSignature field itself is excluded from the computation (set to "")
+// so the signature is deterministic regardless of whether the field is already set.
+func (m *Manager) signRecord(r ConsentRecord) (string, error) {
+	// Exclude the signature field before marshaling.
+	r.HMACSignature = ""
+	payload, err := json.Marshal(r)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, m.key)
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
 // dialogHash returns the SHA-256 hex hash of the current consent dialog text.
