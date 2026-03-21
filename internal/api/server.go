@@ -251,50 +251,61 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	const minChatSimilarity = 0.3
+	// minChatSimilarity is the floor for showing a memory as a source card.
+	// minChatContextSimilarity is the higher bar for including a memory in the
+	// LLM context and for deciding whether the question is a memory lookup at all.
+	// 0.65 filters out incidental matches (e.g. greetings that happen to score
+	// 0.50–0.60 against stored memories just because the embedding space has a
+	// non-zero baseline).
+	const (
+		minChatSimilarity        = 0.3
+		minChatContextSimilarity = 0.65
+	)
 
 	var sources []QueryResult
-	var sb strings.Builder
-	for i, sn := range scored {
-		if sn.Similarity < minChatSimilarity {
-			continue
+	var sb strings.Builder // context fed to LLM — only high-similarity memories
+	ctxIdx := 0
+	for _, sn := range scored {
+		// Always collect sources for the UI cards at the lower threshold.
+		if sn.Similarity >= minChatSimilarity {
+			idBytes, err := hex.DecodeString(sn.NodeID)
+			if err != nil || len(idBytes) != 16 {
+				continue
+			}
+			var nodeID [16]byte
+			copy(nodeID[:], idBytes)
+			node, err := s.store.Read(ctx, nodeID)
+			if err != nil {
+				continue
+			}
+			sources = append(sources, QueryResult{
+				ID:          sn.NodeID,
+				CapturedAt:  node.CapturedAt,
+				Description: node.Description,
+				App:         node.ProcessName,
+				WindowTitle: node.WindowTitle,
+				BrowserURL:  node.BrowserURL,
+				Tags:        node.Tags,
+				Similarity:  sn.Similarity,
+			})
+
+			// Only include in LLM context if it clears the higher bar.
+			if sn.Similarity >= minChatContextSimilarity {
+				ctxIdx++
+				// Plain prose format — no [N] numbering or pipe-separated metadata
+				// that the model tends to copy verbatim into its answer.
+				fmt.Fprintf(&sb, "Memory %d (%s in %s): %s\n\n",
+					ctxIdx,
+					node.CapturedAt.Format("3:04 PM"),
+					node.ProcessName,
+					node.Description,
+				)
+			}
 		}
-		idBytes, err := hex.DecodeString(sn.NodeID)
-		if err != nil || len(idBytes) != 16 {
-			continue
-		}
-		var nodeID [16]byte
-		copy(nodeID[:], idBytes)
-		node, err := s.store.Read(ctx, nodeID)
-		if err != nil {
-			continue
-		}
-		sources = append(sources, QueryResult{
-			ID:          sn.NodeID,
-			CapturedAt:  node.CapturedAt,
-			Description: node.Description,
-			App:         node.ProcessName,
-			WindowTitle: node.WindowTitle,
-			BrowserURL:  node.BrowserURL,
-			Tags:        node.Tags,
-			Similarity:  sn.Similarity,
-		})
-		fmt.Fprintf(&sb, "[%d] %s | %s | %s\n%s\n\n",
-			i+1,
-			node.CapturedAt.Format("Jan 2 3:04 PM"),
-			node.ProcessName,
-			node.WindowTitle,
-			node.Description,
-		)
 	}
 
-	// Determine whether the best-matching memories are actually relevant.
-	// If the top score is below this threshold the question is probably
-	// conversational (greeting, chitchat) rather than a memory lookup, so we
-	// skip the memory context entirely — injecting it just causes the model to
-	// ramble about unrelated screen content.
-	const minChatContextSimilarity = 0.50
-
+	// topSimilarity is the highest score among all results (first element,
+	// since NearestNeighbors returns descending order).
 	topSimilarity := 0.0
 	if len(scored) > 0 {
 		topSimilarity = scored[0].Similarity
@@ -302,16 +313,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	var answer string
 	switch {
-	case sb.Len() == 0:
+	case len(sources) == 0:
 		answer = "I don't have anything relevant stored yet — keep me running and I'll start building up your memory. Try asking again in a bit!"
 
 	case topSimilarity < minChatContextSimilarity:
-		// Casual / conversational query — answer directly without memory dump.
+		// Conversational / casual query — no memory context injected.
+		// Greetings and chitchat often score 0.50–0.62 against random stored
+		// memories; injecting that context just causes the model to narrate
+		// screen content instead of answering the question.
 		prompt := "You are Digital Ghost, a friendly personal memory assistant.\n" +
 			"The user said: \"" + q + "\"\n\n" +
 			"Reply in one or two short, natural sentences. " +
-			"Do NOT summarise what you have seen on screen. " +
-			"If it is a greeting, just greet back warmly."
+			"Do NOT summarise screen content or describe what you have seen. " +
+			"If it is a greeting, just greet back warmly and briefly."
 		answer, err = s.client.Generate(ctx, prompt)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -326,12 +340,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// Memory-anchored query — ground the answer in the retrieved context.
 		prompt := "You are Digital Ghost, a personal memory assistant.\n" +
 			"The user is asking: \"" + q + "\"\n\n" +
-			"Relevant moments from their recent screen activity:\n\n" +
+			"Background — recent activity that seems relevant:\n\n" +
 			sb.String() +
-			"Answer in 1-3 short sentences. " +
-			"Speak directly and naturally — do NOT list or describe each memory, just answer the question. " +
-			"Do not mention screenshots, snapshots, or that you watched the screen. " +
-			"If the memories don't fully answer the question, say so briefly."
+			"Answer in 1-3 short sentences using your own words. " +
+			"IMPORTANT: do NOT copy or quote any of the background text above — synthesise a natural answer from it. " +
+			"Do not mention screenshots, screen captures, or memories. " +
+			"If the background does not answer the question well, say so briefly."
 		answer, err = s.client.Generate(ctx, prompt)
 		if err != nil {
 			if ctx.Err() != nil {
