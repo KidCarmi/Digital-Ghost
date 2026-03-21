@@ -1,119 +1,128 @@
 # Digital Ghost
 
-**A local-only, air-gapped Contextual Memory Layer that indexes what you see.**
+**Local-only, air-gapped contextual memory for your desktop.**
 
-> "Don't be a supportive assistant. Be a gatekeeper."
-
-This document begins with the honest assessment a Lead Architect and CISO owes before writing a single line of code.
-
----
-
-## The Liability Brief (Read This First)
-
-Before discussing how Digital Ghost works, here are the three reasons it can catastrophically fail — and the conditions under which it is safe to proceed.
-
-### Liability #1 — Privacy-by-Accident Breach
-
-DG captures screen content continuously. Inevitably, that screen will show a banking portal, a password manager's unlock screen, a private medical record, or an SSH private key displayed in a terminal. If any of that data enters the vector DB — even encrypted locally — it is now indexed and queryable. A single bug in the capture path is a credential exfiltration event, even with no network involved, because the attacker model now includes "attacker with physical access to the machine" and "malicious process that queries the DG API."
-
-**Condition for proceeding:** A hard, fail-closed privacy gate must be the *first* component written and the *last* component changed. It must block capture based on window metadata (app name, URL) before any pixel is read. It must fail closed: if the gate cannot make a determination, it blocks.
-
-### Liability #2 — Resource Predation
-
-LLaVA-class Vision-Language Models require 4–8 GB VRAM and 100–200% CPU during inference. Without a governor that yields to foreground workloads, DG will peg the GPU continuously, drain a laptop battery in under 90 minutes, and cause thermal throttling on sustained use. Users will uninstall it within a day. **A tool that destroys the user experience provides no value.**
-
-**Condition for proceeding:** A resource governor must be built before the inference pipeline is wired. It must enforce a configurable CPU/GPU budget and yield completely when the system is under foreground load.
-
-### Liability #3 — Consent and Legal Exposure
-
-On any system that is not exclusively single-user (a shared workstation, a corporate laptop, a device with a secondary OS user), capturing screen content without explicit per-session consent is a GDPR/CCPA violation and potentially an employment law violation. Even on a personal machine, capturing screen data from other users' X11 sessions on a shared Linux system is a breach.
-
-**Condition for proceeding:** A first-run consent flow and a permanently-visible system tray indicator are required. DG must refuse to start without a verifiable consent record. No silent/headless mode is permitted.
-
----
-
-## What Digital Ghost Is
+Digital Ghost runs quietly in the background, watches your screen at 2 fps, filters everything through a privacy gate, describes what it sees using a local AI model, and stores encrypted notes you can search later — all without a single byte leaving your machine.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  LOCAL ONLY. NO NETWORK. ALL DATA STAYS ON YOUR MACHINE.        │
-│  Air-gapped by design. Ollama runs locally. LanceDB is local.   │
+│  100% LOCAL. NO NETWORK. NO CLOUD. ALL DATA STAYS ON YOUR MACHINE│
+│  Ollama runs locally. Storage is on-disk, AES-256-GCM encrypted. │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Digital Ghost is a background daemon that:
+---
 
-1. **Captures** your screen at a low frame rate (default: 2 fps)
-2. **Filters** frames through a privacy gate (blocklist of sensitive apps/URLs)
-3. **Deduplicates** using perceptual hashing (no repeated frames hit the AI)
-4. **Describes** novel frames using a local Vision-Language Model via Ollama
-5. **Scores** descriptions by engagement and semantic relevance
-6. **Stores** high-value descriptions as encrypted vectors in a local LanceDB
-7. **Exposes** a query interface: "What was I reading last Tuesday about distributed systems?"
+## Quick Start (Windows)
 
-It is explicitly **not**:
-- A keylogger
-- A cloud-sync tool
-- A surveillance system
-- An always-on recorder (it is a smart, filtered indexer)
+```powershell
+# 1. Prerequisites (first time only)
+.\scripts\setup.ps1        # installs Go, Ollama, pulls llava:7b
+
+# 2. Build + run
+.\scripts\run.ps1
+
+# 3. Open the search + timeline UI
+.\scripts\search.ps1       # opens http://localhost:7327 in your browser
+```
+
+On first launch a native consent dialog appears. Click **Yes** to allow capture. A purple system tray icon is always visible while DG is running — right-click to **Pause**, **Open Search UI**, or **Stop**.
 
 ---
 
-## Architecture Overview
+## What It Does
+
+| Step | What happens |
+|------|-------------|
+| **Capture** | Screenshots the primary monitor at 2 fps using GDI BitBlt (or DXGI if configured) |
+| **Privacy gate** | Checks foreground window app name, title, and browser URL against a blocklist *before* any pixel is read. Fail-closed. |
+| **Dedup** | Perceptual hash (pHash) skips frames that haven't changed |
+| **Describe** | Novel frames are sent to `llava:7b` via Ollama; gets back a natural-language description + tags |
+| **Score** | Engagement score (dwell time × input activity × content class) filters out noise |
+| **Store** | High-value frames are AES-256-GCM encrypted and written to disk; key stays in Windows Credential Manager |
+| **Search** | Ask questions at `http://localhost:7327` — semantic search powered by `nomic-embed-text` embeddings |
+
+---
+
+## Current Status
+
+### Working end-to-end
+
+- **Screen capture** — GDI BitBlt on Windows (primary monitor); DXGI Desktop Duplication available via `capture.backend: dxgi`
+- **Window metadata** — Win32 `GetForegroundWindow` + `QueryFullProcessImageNameW` (real process name + window title)
+- **Browser URL extraction** — Chromium family via `EnumChildWindows` / `WM_GETTEXT`; Firefox and Edge via IUIAutomation `urlbar-input` / `addressEditBox`
+- **Privacy gate** — fail-closed blocklist (19 apps, 63 URL patterns, 22 title patterns); pause/resume from tray
+- **Perceptual hash deduplication** — frames within Hamming distance 10 are skipped
+- **Ollama inference** — real HTTP to `llava:7b` with retry and timeout; warm, uncertainty-aware prompt (won't fabricate content it can't see)
+- **Embeddings** — `nomic-embed-text` via Ollama `/api/embeddings`
+- **Resource governor** — configurable CPU/GPU budget; yields to foreground workloads
+- **Encrypted storage** — flat-file JSON store (`~/.local/share/digitalghost/memories/`), one AES-256-GCM file per node; key in Windows Credential Manager
+- **Vector search** — in-memory cosine similarity over stored embeddings (works well up to ~10 k nodes)
+- **Retention sweep** — daily at 2 am; secure deletion (3-pass overwrite)
+- **Web UI** at `http://localhost:7327`:
+  - **Search tab** — semantic + LLM-synthesised chat answers with source cards
+  - **Timeline tab** — all memories newest-first, grouped by day, paginated (50/page)
+  - **Manage panel** — delete today / this week / this month / all (CSRF-protected)
+- **System tray** — purple circle icon; Pause Capture / Resume Capture / Open Search UI / Stop
+- **Consent flow** — native `MessageBoxW` dialog on first run; record stored in `~/.config/digitalghost/consent.json`
+
+### Not yet implemented
+
+| Feature | Notes |
+|---------|-------|
+| Multi-monitor capture | Architecture designed; `Frame.DisplayIndex` exists. Needs one goroutine per `IDXGIOutput`. |
+| Sensitive-input masking | Detect focused `<input type="password">` via UIA `UIA_IsPasswordPropertyId`; black-out region before sending to Ollama |
+| Linux / macOS | X11 (`XShmGetImage`) and ScreenCaptureKit stubs exist; not wired |
+
+---
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   User's Desktop Session                │
-│                                                         │
-│  ┌──────────┐   window metadata    ┌─────────────────┐ │
-│  │  OS APIs  │──(app, title, URL)──▶│  Privacy Gate   │ │
-│  │ (XShm /   │                     │  (blocklist.go) │ │
-│  │  Portal / │   raw frame         │        │        │ │
-│  │  DXGI)    │────────────────────▶│  BLOCK / PASS   │ │
-│  └──────────┘                      └────────┬────────┘ │
-│                                             │ PASS only │
-└─────────────────────────────────────────────┼──────────┘
-                                              │
-                     pHash dedup              ▼
-                     (skip dupes)         ┌──────────┐
-                                          │ FrameQ   │
-                                          │(bounded) │
-                                          └────┬─────┘
-                                               │
-                    ┌──────────────────────────▼──────────┐
-                    │       Resource Governor              │
-                    │  (throttle.go — CPU/GPU budget)      │
-                    │  Yields when system is under load    │
-                    └──────────────────────────┬──────────┘
-                                               │
-                    ┌──────────────────────────▼──────────┐
-                    │        Ollama VLM Inference          │
-                    │  (ollama.go — local HTTP, timeout)   │
-                    │  Output: text description + tags     │
-                    └──────────────────────────┬──────────┘
-                                               │
-                    ┌──────────────────────────▼──────────┐
-                    │       Semantic Filter               │
-                    │  Engagement score × Content class   │
-                    │  Drop score < threshold (noise)     │
-                    └──────────────────────────┬──────────┘
-                                               │
-                    ┌──────────────────────────▼──────────┐
-                    │    Encrypted Vector Store           │
-                    │  (LanceDB + AES-256-GCM per record) │
-                    │  Key in OS keychain, never on disk  │
-                    └─────────────────────────────────────┘
+Desktop Session
+│
+│  Win32 APIs (GetForegroundWindow, QueryFullProcessImageNameW)
+│  IUIAutomation (browser URL — Firefox, Edge, Chrome)
+│                                     │
+│                            ┌────────▼────────┐
+│                            │  Privacy Gate   │  ← checks BEFORE pixels
+│                            │  (blocklist +   │
+│                            │   pause state)  │
+│                            └────────┬────────┘
+│                                PASS │ (BLOCKED → skip frame)
+│  GDI BitBlt / DXGI Duplication     │
+│  ──────────────────────────────────▼
+│                            ┌────────────────┐
+│                            │  pHash dedup   │  ← skip identical frames
+│                            └────────┬───────┘
+│                                     │
+│                            ┌────────▼───────┐
+│                            │  Frame Queue   │  ← bounded, drop-on-full
+│                            │  (100 frames)  │
+│                            └────────┬───────┘
+│                                     │
+│                       ┌─────────────▼──────────────┐
+│                       │     Resource Governor       │  ← CPU/GPU budget
+│                       │  Yields under load          │
+│                       └─────────────┬──────────────┘
+│                                     │
+│                       ┌─────────────▼──────────────┐
+│                       │   Ollama llava:7b           │  ← local HTTP only
+│                       │   description + tags        │
+│                       └─────────────┬──────────────┘
+│                                     │
+│                       ┌─────────────▼──────────────┐
+│                       │  Engagement scorer +        │
+│                       │  Graph coherence filter     │
+│                       └─────────────┬──────────────┘
+│                                     │
+│                       ┌─────────────▼──────────────┐
+│                       │  AES-256-GCM encrypted      │
+│                       │  flat-file JSON store       │  ← key in OS keychain
+│                       └────────────────────────────┘
+│
+└── HTTP :7327  Search tab · Timeline tab · Manage panel
 ```
-
-### Stack
-
-| Component | Technology | Why |
-|-----------|-----------|-----|
-| Engine | Go 1.22 | Low-level OS APIs, goroutine concurrency model, single static binary |
-| AI Inference | Ollama (llava:7b) | Fully local, no network, hardware-accelerated, swappable model |
-| Vector Store | LanceDB | Embeddable, no server process, Apache Arrow columnar storage |
-| Encryption | AES-256-GCM | Per-record AEAD; authenticated encryption prevents tampering |
-| Key Storage | OS Keychain | libsecret (Linux), Keychain (macOS), DPAPI (Windows) |
 
 ---
 
@@ -121,81 +130,120 @@ It is explicitly **not**:
 
 ```
 Digital-Ghost/
-├── cmd/digitalghost/main.go          # Entry point; wires all components
+├── cmd/digitalghost/main.go       # Entry point — wires all components
 ├── internal/
-│   ├── config/config.go              # Validated configuration
-│   ├── tray/consent.go               # First-run consent + always-visible indicator
+│   ├── api/
+│   │   ├── server.go              # HTTP server (/api/query, /api/timeline, /api/chat, /api/delete)
+│   │   └── ui.html                # Embedded single-page UI (Search + Timeline tabs)
 │   ├── capture/
-│   │   ├── privacy.go                # ★ Pre-capture privacy gate (highest consequence)
-│   │   ├── frame.go                  # Frame struct + perceptual hash
-│   │   ├── capture_linux_x11.go      # X11 XShmGetImage implementation
-│   │   ├── capture_linux_wayland.go  # PipeWire / xdg-desktop-portal
-│   │   ├── capture_darwin.go         # ScreenCaptureKit
-│   │   └── capture_windows.go        # DXGI Desktop Duplication
+│   │   ├── privacy.go             # ★ Privacy gate — first thing checked, last thing changed
+│   │   ├── frame.go               # Frame struct, pHash, Capturer interface
+│   │   ├── capture_windows.go     # GDI BitBlt capture + Win32 window metadata
+│   │   ├── dxgi_windows.go        # DXGI Desktop Duplication backend (opt-in)
+│   │   ├── uia_windows.go         # IUIAutomation browser URL extraction (Firefox + Edge)
+│   │   ├── capture_linux_x11.go   # X11 XShm stub
+│   │   └── capture_unsupported.go # CI / other platforms stub
+│   ├── config/config.go           # Validated config + safe defaults
+│   ├── defaults/                  # Embedded default blocklist (in binary)
 │   ├── filter/
-│   │   ├── blocklist.go              # Domain + app blocklist (hot-reload, fail-closed)
-│   │   ├── engagement.go             # Dwell time + interaction scoring
-│   │   └── classifier.go             # Fast content category classifier (pre-VLM)
+│   │   ├── blocklist.go           # Fail-closed blocklist with fsnotify hot-reload
+│   │   ├── classifier.go          # Fast content-class scorer (pre-VLM)
+│   │   └── engagement.go          # Engagement scoring (dwell × input × content class)
+│   ├── graph/coherence.go         # Graph coherence check (isolated node penalty)
 │   ├── inference/
-│   │   ├── throttle.go               # Resource governor (CPU/GPU budget)
-│   │   ├── queue.go                  # Bounded frame queue with drop policy
-│   │   └── ollama.go                 # Ollama HTTP client
-│   ├── graph/
-│   │   └── coherence.go              # Graph coherence scoring
-│   └── storage/
-│       ├── encrypt.go                # AES-256-GCM per-record encryption
-│       ├── keychain.go               # OS keychain abstraction
-│       ├── lancedb.go                # LanceDB vector store client
-│       └── retention.go              # Retention policy + secure deletion
+│   │   ├── ollama.go              # Ollama HTTP client — infer + embed + generate
+│   │   ├── queue.go               # Bounded frame queue
+│   │   └── throttle.go            # Resource governor
+│   ├── storage/
+│   │   ├── encrypt.go             # AES-256-GCM per-record encryption
+│   │   ├── jsonstore.go           # Flat-file JSON vector store (lanceDBConn impl)
+│   │   ├── keychain.go            # OS keychain — DPAPI on Windows
+│   │   ├── lancedb.go             # Store interface, MemoryNode, TimelineEntry types
+│   │   └── retention.go           # Daily retention sweep + secure deletion
+│   └── tray/
+│       ├── consent.go             # Consent manager
+│       ├── consent_windows.go     # Windows: MessageBoxW consent + systray icon
+│       └── consent_platform.go    # Non-Windows stub
+├── configs/
+│   ├── blocklist.yaml             # Default privacy blocklist (embedded in binary)
+│   └── default.yaml               # Default configuration values
 ├── docs/
-│   ├── ARCHITECTURE.md               # Full technical architecture
-│   └── THREAT_MODEL.md               # STRIDE threat model
-└── configs/
-    ├── default.yaml                  # Default resource budget config
-    └── blocklist.yaml                # Default sensitive app/domain blocklist
+│   ├── ARCHITECTURE.md
+│   └── THREAT_MODEL.md
+└── scripts/
+    ├── setup.ps1                  # Install Go, Ollama, pull llava:7b
+    ├── run.ps1                    # Build + launch daemon
+    └── search.ps1                 # Open http://localhost:7327 in browser
 ```
 
 ---
 
-## Getting Started
+## Configuration
 
-### Prerequisites
+Edit `~/.config/digitalghost/config.yaml` to override defaults:
 
-- Go 1.22+
-- [Ollama](https://ollama.com/) running locally with a vision model: `ollama pull llava:7b`
-- Linux with X11 or Wayland, macOS 12.3+, or Windows 10+
+```yaml
+capture:
+  fps: 2                    # frames per second (max 30)
+  hash_threshold: 10        # pHash Hamming distance for duplicate detection
+  backend: gdi              # "gdi" (default) or "dxgi" (GPU-accelerated)
 
-### Build
+resource_budget:
+  max_cpu_pct: 20
+  max_inference_per_min: 6
 
-```bash
-go build -o bin/digitalghost ./cmd/digitalghost
+inference:
+  model: llava:7b
+  timeout_sec: 120          # llava:7b cold-start can take 60-90s
+
+storage:
+  retention_days: 90
+  secure_delete: true
 ```
 
-### First Run
+Add custom blocklist entries to `~/.config/digitalghost/blocklist.yaml`:
 
-On first run, DG displays a consent dialog explaining what it captures and how to stop it. Capture does not begin until consent is given. A system tray icon is always visible when DG is running.
-
-```bash
-./bin/digitalghost start
+```yaml
+apps:
+  - "MySecretApp"
+url_patterns:
+  - "(?i)myinternalwiki\\.company\\.com"
 ```
 
-### Wipe All Data
+The blocklist hot-reloads within 500ms of any file change — no restart needed.
 
-```bash
-./bin/digitalghost wipe --confirm
+---
+
+## Data Locations (Windows)
+
+| Path | Contents |
+|------|----------|
+| `%USERPROFILE%\.config\digitalghost\` | `config.yaml`, `blocklist.yaml`, `consent.json` |
+| `%USERPROFILE%\.local\share\digitalghost\memories\` | Encrypted memory nodes (`.enc` files + `index.json`) |
+| Windows Credential Manager | Encryption key (never written to disk) |
+
+---
+
+## CLI Reference
+
+```powershell
+digitalghost.exe                       # Start the daemon (normal usage)
+digitalghost.exe --status              # Show config summary and exit
+digitalghost.exe --wipe --confirm      # Permanently delete all stored memories
+digitalghost.exe --config <path>       # Use a custom config file
 ```
-
-This deletes all stored vectors and the consent record within 60 seconds.
 
 ---
 
 ## Security Properties
 
-- **Local only**: No network calls except to `127.0.0.1:11434` (Ollama). Verifiable with `ss -tp` or `lsof -i`.
-- **Encrypted at rest**: Every stored memory node is AES-256-GCM encrypted. The key lives in the OS keychain, never on disk.
-- **Tamper-evident**: Each node carries an HMAC-SHA256; verified on every read.
-- **Minimal privilege**: DG refuses to run as root. No setuid bit required.
-- **Auditable**: All capture decisions (blocked/allowed) are logged to `~/.local/share/digitalghost/dg.log`.
+- **Local only** — the only outbound connection is `127.0.0.1:11434` (Ollama). Verifiable with `netstat -b`.
+- **Encrypted at rest** — every memory node is AES-256-GCM encrypted before being written to disk. The key lives in Windows Credential Manager and is never written to a file.
+- **Privacy-gate-first** — window metadata (app name, title, URL) is checked *before* any pixel buffer is allocated. If the gate cannot make a determination, it blocks.
+- **Fail-closed blocklist** — if `blocklist.yaml` is missing or corrupt, capture halts entirely. It never fails open.
+- **CSRF protection** — the delete endpoint requires a `X-DG-CSRF-Token` header set at server startup. Cross-origin pages cannot forge it.
+- **No root** — the daemon refuses to start as Administrator/root.
+- **Tray icon required** — there is no silent/headless mode. If the tray icon cannot be shown, the daemon exits.
 
 See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the full STRIDE analysis.
 
