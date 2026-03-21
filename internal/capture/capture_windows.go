@@ -101,6 +101,58 @@ type monitorInfo struct {
 	rect     image.Rectangle
 }
 
+// browserURLState is the shared state threaded through the EnumChildWindows
+// callback via lParam. Declared at package level so the callback function
+// (also package-level) can reference it as a typed pointer.
+type browserURLState struct {
+	url   string
+	found bool
+}
+
+// enumMonitorsCallback and enumChildWindowsCallback are created once at
+// package init. syscall.NewCallback has a hard limit of 1024 total
+// registrations — calling it per-frame exhausts the pool in minutes.
+var (
+	enumMonitorsCallback    = syscall.NewCallback(enumMonitorProc)
+	enumChildWindowsCallback = syscall.NewCallback(enumChildWindowProc)
+)
+
+// enumMonitorProc is the EnumDisplayMonitors callback.
+// State (a *[]monitorInfo) is passed via lParam to avoid a closure.
+func enumMonitorProc(hMon, _ /*hdcMon*/, lprcMon, lParam uintptr) uintptr {
+	type rect32 struct{ left, top, right, bottom int32 }
+	r := (*rect32)(unsafe.Pointer(lprcMon))
+	monitors := (*[]monitorInfo)(unsafe.Pointer(lParam))
+	*monitors = append(*monitors, monitorInfo{
+		hMonitor: hMon,
+		rect:     image.Rect(int(r.left), int(r.top), int(r.right), int(r.bottom)),
+	})
+	return 1 // continue enumeration
+}
+
+// enumChildWindowProc is the EnumChildWindows callback used by extractBrowserURL.
+// State (a *browserURLState) is passed via lParam to avoid a closure.
+func enumChildWindowProc(childHwnd, lParam uintptr) uintptr {
+	state := (*browserURLState)(unsafe.Pointer(lParam))
+	if state.found {
+		return 0 // stop enumeration
+	}
+	var classBuf [256]uint16
+	procGetClassNameW.Call(childHwnd, uintptr(unsafe.Pointer(&classBuf[0])), uintptr(len(classBuf)))
+	className := syscall.UTF16ToString(classBuf[:])
+	if className == "Chrome_OmniboxView" || className == "OmniboxViewViews" {
+		var textBuf [2048]uint16
+		procSendMessageW.Call(childHwnd, wmGetText, uintptr(len(textBuf)), uintptr(unsafe.Pointer(&textBuf[0])))
+		text := syscall.UTF16ToString(textBuf[:])
+		if text != "" {
+			state.url = text
+			state.found = true
+		}
+		return 0 // stop enumeration
+	}
+	return 1 // continue
+}
+
 // WindowsCapturer captures frames using DXGI Desktop Duplication.
 type WindowsCapturer struct {
 	cfg           *config.Config
@@ -178,27 +230,10 @@ func secondsSinceLastInput() float64 {
 
 // enumerateMonitors returns the list of monitors and their virtual-screen rectangles.
 // Uses EnumDisplayMonitors with a null HDC to cover the full virtual screen.
+// The callback is package-level (enumMonitorsCallback) — created once at init.
 func enumerateMonitors() []monitorInfo {
 	var monitors []monitorInfo
-
-	// The callback is called once per monitor by EnumDisplayMonitors.
-	// We use a Go closure captured via a package-level variable so we can pass
-	// a syscall.NewCallback pointer to the Win32 API.
-	cb := syscall.NewCallback(func(hMon, hdcMon, lprcMon, lParam uintptr) uintptr {
-		// lprcMon points to a RECT { left, top, right, bottom } (4×int32).
-		type rect32 struct{ left, top, right, bottom int32 }
-		r := (*rect32)(unsafe.Pointer(lprcMon))
-		monitors = append(monitors, monitorInfo{
-			hMonitor: hMon,
-			rect: image.Rect(
-				int(r.left), int(r.top),
-				int(r.right), int(r.bottom),
-			),
-		})
-		return 1 // continue enumeration
-	})
-
-	procEnumDisplayMonitors.Call(0, 0, cb, 0)
+	procEnumDisplayMonitors.Call(0, 0, enumMonitorsCallback, uintptr(unsafe.Pointer(&monitors)))
 	return monitors
 }
 
@@ -288,10 +323,13 @@ func captureMonitorGDI(rect image.Rectangle) (*image.RGBA, error) {
 // Supported engines:
 //   - Chromium-based (Chrome, Edge, Opera, Brave, Vivaldi, Chromium): "Chrome_OmniboxView"
 //   - Firefox: "MozillaWindowClass" toolbar — reads child edit control
+//
+// The EnumChildWindows callback is package-level (enumChildWindowsCallback) —
+// created once at init to avoid exhausting syscall.NewCallback's 1024-slot pool.
 func extractBrowserURL(hwnd uintptr, processName string) string {
 	knownBrowsers := []string{"opera", "chrome", "firefox", "msedge", "brave", "vivaldi", "chromium"}
-	isBrowser := false
 	lowerProcess := strings.ToLower(processName)
+	isBrowser := false
 	for _, b := range knownBrowsers {
 		if strings.Contains(lowerProcess, b) {
 			isBrowser = true
@@ -302,37 +340,8 @@ func extractBrowserURL(hwnd uintptr, processName string) string {
 		return ""
 	}
 
-	// Shared state for the child-window enumeration callback.
-	type searchState struct {
-		url   string
-		found bool
-	}
-	state := &searchState{}
-
-	cb := syscall.NewCallback(func(childHwnd, lParam uintptr) uintptr {
-		if state.found {
-			return 0 // stop enumeration
-		}
-		// Get the window class name.
-		var classBuf [256]uint16
-		procGetClassNameW.Call(childHwnd, uintptr(unsafe.Pointer(&classBuf[0])), uintptr(len(classBuf)))
-		className := syscall.UTF16ToString(classBuf[:])
-
-		// Chromium omnibox edit control class name.
-		if className == "Chrome_OmniboxView" || className == "OmniboxViewViews" {
-			var textBuf [2048]uint16
-			procSendMessageW.Call(childHwnd, wmGetText, uintptr(len(textBuf)), uintptr(unsafe.Pointer(&textBuf[0])))
-			text := syscall.UTF16ToString(textBuf[:])
-			if text != "" {
-				state.url = text
-				state.found = true
-			}
-			return 0 // stop enumeration
-		}
-		return 1 // continue
-	})
-
-	procEnumChildWindows.Call(hwnd, cb, 0)
+	state := &browserURLState{}
+	procEnumChildWindows.Call(hwnd, enumChildWindowsCallback, uintptr(unsafe.Pointer(state)))
 	return state.url
 }
 
