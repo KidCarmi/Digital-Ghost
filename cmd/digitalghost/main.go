@@ -241,8 +241,10 @@ func run() error {
 		}
 	}()
 
-	go runCaptureLoop(cfg, gate, frameQueue, stopCh, logger)
-	go runInferenceLoop(cfg, governor, ollamaClient, frameQueue, coherenceChecker, store, stopCh, logger)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); runCaptureLoop(cfg, gate, frameQueue, stopCh, logger) }()
+	go func() { defer wg.Done(); runInferenceLoop(cfg, governor, ollamaClient, frameQueue, coherenceChecker, store, stopCh, logger) }()
 	go retentionMgr.RunScheduled(stopCh)
 
 	// ── Step 9: Block until shutdown ─────────────────────────────────────────
@@ -257,10 +259,18 @@ func run() error {
 		logger.Info("stop channel closed; shutting down")
 	}
 
-	// Give goroutines 10 seconds to drain.
+	// Give goroutines 10 seconds to drain before hard exit.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-	_ = shutdownCtx
+
+	doneCh := make(chan struct{})
+	go func() { wg.Wait(); close(doneCh) }()
+	select {
+	case <-doneCh:
+		logger.Info("all goroutines stopped cleanly")
+	case <-shutdownCtx.Done():
+		logger.Warn("shutdown timed out waiting for goroutines to drain")
+	}
 
 	logger.Info("Digital Ghost stopped")
 	return nil
@@ -268,12 +278,25 @@ func run() error {
 
 // runCaptureLoop is the capture goroutine.
 func runCaptureLoop(cfg *config.Config, gate *capture.Gate, q *inference.Queue, stopCh <-chan struct{}, logger *slog.Logger) {
-	capturer, err := capture.NewCapturer(cfg, gate, makeChan(q), logger)
+	// Bridge: capturer writes to ch; the goroutine below pushes into the queue.
+	// ch is closed after the capturer exits so the bridge goroutine terminates cleanly.
+	ch := make(chan *capture.Frame, 1)
+	go func() {
+		for f := range ch {
+			q.Push(f)
+		}
+	}()
+
+	capturer, err := capture.NewCapturer(cfg, gate, ch, logger)
 	if err != nil {
-		logger.Error("failed to initialize X11 capturer", "error", err)
+		logger.Error("failed to initialize capturer", "error", err)
+		close(ch)
 		return
 	}
-	defer capturer.Close()
+	defer func() {
+		capturer.Close()
+		close(ch) // signals the bridge goroutine to exit
+	}()
 	if err := capturer.Run(stopCh); err != nil {
 		logger.Error("capture loop exited with error", "error", err)
 	}
@@ -404,18 +427,6 @@ func runStatus(cfg *config.Config, logger *slog.Logger) error {
 	fmt.Printf("Retention: %d days\n", cfg.Storage.RetentionDays)
 	fmt.Printf("Max CPU: %d%%  Max GPU: %d%%\n", cfg.ResourceBudget.MaxCPUPct, cfg.ResourceBudget.MaxGPUPct)
 	return nil
-}
-
-// makeChan adapts a *inference.Queue to a chan<- *capture.Frame for the capturer.
-// The capturer pushes directly to the channel; the queue wrapper handles overflow.
-func makeChan(q *inference.Queue) chan<- *capture.Frame {
-	ch := make(chan *capture.Frame, 1)
-	go func() {
-		for f := range ch {
-			q.Push(f)
-		}
-	}()
-	return ch
 }
 
 // ensureDefaultBlocklist writes the embedded default blocklist to path if it

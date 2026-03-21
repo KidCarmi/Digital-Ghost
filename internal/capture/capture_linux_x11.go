@@ -42,15 +42,16 @@ func NewCapturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, logger *s
 // NewX11Capturer creates a capturer for the primary X11 display.
 // Returns an error if the display cannot be opened or XShm is unavailable.
 func NewX11Capturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, logger *slog.Logger) (*X11Capturer, error) {
-	// In production: XOpenDisplay(nil), check for MIT-SHM extension,
-	// allocate shared memory segment via XShmCreateImage.
-	// Stub implementation for architecture scaffold.
-	return &X11Capturer{
-		cfg:    cfg,
-		gate:   gate,
-		frames: frames,
-		logger: logger,
-	}, nil
+	// The X11 window metadata implementation is not yet complete.
+	// Without real process name / window title data, the privacy gate cannot
+	// function correctly (it would always see "stub" and never block anything).
+	// Refusing to start is the correct fail-closed behaviour.
+	return nil, fmt.Errorf(
+		"X11 capture is not yet implemented: " +
+			"queryWindowContextImpl() returns stub metadata, which means the " +
+			"privacy gate cannot block sensitive windows. " +
+			"Build and run Digital Ghost on Windows until the X11 implementation is complete.",
+	)
 }
 
 // Run starts the capture loop. It blocks until ctx is cancelled.
@@ -145,22 +146,15 @@ func (c *X11Capturer) Close() error {
 // queryWindowContextImpl is the X11 implementation of queryWindowContext.
 // It reads _NET_ACTIVE_WINDOW from the root window, then queries the
 // AT-SPI2 accessibility tree for browser URL and focused input role.
+//
+// NOT YET IMPLEMENTED: returns an error so the privacy gate fails closed.
+// The gate's Check() treats any error here as a block decision, which is
+// the correct safe behaviour until the real implementation ships.
 func queryWindowContextImpl() (windowMetadata, error) {
-	// In production:
-	// 1. XGetInputFocus or _NET_ACTIVE_WINDOW to get active window
-	// 2. XGetWindowProperty(_NET_WM_PID) to get PID
-	// 3. Read /proc/<pid>/comm for process name
-	// 4. XGetWindowProperty(_NET_WM_NAME) for window title
-	// 5. AT-SPI2 D-Bus call for browser URL and focused element role
-	//
-	// Stub: return empty metadata for architecture scaffold.
-	return windowMetadata{
-		ProcessName:      "stub",
-		WindowTitle:      "Stub Window",
-		BrowserURL:       "",
-		FocusedInputRole: "",
-		PID:              0,
-	}, nil
+	return windowMetadata{}, fmt.Errorf(
+		"X11 window metadata not yet implemented: " +
+			"privacy gate cannot function without real process/window information",
+	)
 }
 
 // captureDisplayStub returns a placeholder image for the architecture scaffold.

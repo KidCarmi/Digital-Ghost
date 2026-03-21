@@ -33,6 +33,12 @@ type Governor struct {
 	cpuPercent atomic.Int64
 	gpuPercent atomic.Int64
 
+	// prevCPUTotal and prevCPUIdle are the previous /proc/stat cumulative
+	// values used to compute a delta-based CPU percentage. Only accessed
+	// from the metricsLoop goroutine — no lock needed.
+	prevCPUTotal int64
+	prevCPUIdle  int64
+
 	// tokenBucket is used to enforce max_inference_per_min.
 	tokenBucket chan struct{}
 
@@ -171,42 +177,51 @@ func (g *Governor) refillLoop() {
 }
 
 // updateMetrics reads current CPU and GPU utilization and stores them atomically.
+// CPU is computed as a delta between two successive /proc/stat readings so that
+// it reflects current load rather than the cumulative average since boot.
 func (g *Governor) updateMetrics() {
-	cpu := readCPUPercent()
+	total, idle := readCPURaw()
+	var cpu int
+	if g.prevCPUTotal > 0 {
+		dtotal := total - g.prevCPUTotal
+		didle := idle - g.prevCPUIdle
+		if dtotal > 0 {
+			cpu = int(100 * (dtotal - didle) / dtotal)
+		}
+	}
+	g.prevCPUTotal = total
+	g.prevCPUIdle = idle
+
 	gpu := readGPUPercent()
 	g.cpuPercent.Store(int64(cpu))
 	g.gpuPercent.Store(int64(gpu))
 }
 
-// readCPUPercent reads the system CPU utilization percentage (0–100) from /proc/stat.
-// Returns 0 on error (conservative: allows inference when metrics are unavailable).
-func readCPUPercent() int {
+// readCPURaw returns the cumulative (total, idle) jiffies from /proc/stat.
+// Returns (0, 0) on error; the caller handles the zero-value gracefully.
+func readCPURaw() (total, idle int64) {
 	data, err := os.ReadFile("/proc/stat")
 	if err != nil {
-		return 0
+		return 0, 0
 	}
 	line := strings.SplitN(string(data), "\n", 2)[0] // first line: "cpu  ..."
 	fields := strings.Fields(line)
 	if len(fields) < 5 || fields[0] != "cpu" {
-		return 0
+		return 0, 0
 	}
 
 	// Fields: user, nice, system, idle, iowait, irq, softirq, ...
-	var total, idle int64
 	for i, f := range fields[1:] {
 		v, err := strconv.ParseInt(f, 10, 64)
 		if err != nil {
-			return 0
+			return 0, 0
 		}
 		total += v
 		if i == 3 { // idle field
 			idle = v
 		}
 	}
-	if total == 0 {
-		return 0
-	}
-	return int(100 * (total - idle) / total)
+	return total, idle
 }
 
 // readGPUPercent reads GPU utilization. Currently reads from sysfs for Intel/AMD.

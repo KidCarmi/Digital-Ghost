@@ -158,12 +158,10 @@ func enumChildWindowProc(childHwnd, lParam uintptr) uintptr {
 // Per-monitor state (GDI handles, pHash history) lives in monitorLoop instances
 // created by Run().
 type WindowsCapturer struct {
-	cfg           *config.Config
-	gate          *Gate
-	logger        *slog.Logger
-	frames        chan<- *Frame
-	lastWindowKey string
-	windowSince   time.Time
+	cfg    *config.Config
+	gate   *Gate
+	logger *slog.Logger
+	frames chan<- *Frame
 	// dxgi is non-nil when cfg.Capture.Backend == "dxgi".
 	dxgi *DXGICapturer
 }
@@ -229,7 +227,7 @@ func (c *WindowsCapturer) Run(stopCh <-chan struct{}) error {
 }
 
 // monitorLoop owns the per-monitor capture state: GDI handles, pHash memory,
-// and display index. One instance is created per connected monitor in Run().
+// dwell tracking, and display index. One instance is created per connected monitor in Run().
 type monitorLoop struct {
 	parent     *WindowsCapturer
 	mon        monitorInfo
@@ -243,6 +241,10 @@ type monitorLoop struct {
 	cachedH  int
 
 	prevFrame *Frame
+
+	// Per-monitor dwell tracking (each display has independent window history).
+	lastWindowKey string
+	windowSince   time.Time
 }
 
 // run is the per-monitor capture ticker loop. Blocks until stopCh is closed.
@@ -297,14 +299,14 @@ func (ml *monitorLoop) captureFrame() (*Frame, error) {
 		return nil, nil
 	}
 
-	// Dwell tracking per monitor (each display has independent window history).
+	// Dwell tracking — per monitorLoop, no lock needed (each goroutine owns its own instance).
 	windowKey := result.WindowCtx.ProcessName + "|" + result.WindowCtx.WindowTitle
 	now := time.Now()
-	if windowKey != c.lastWindowKey {
-		c.lastWindowKey = windowKey
-		c.windowSince = now
+	if windowKey != ml.lastWindowKey {
+		ml.lastWindowKey = windowKey
+		ml.windowSince = now
 	}
-	dwellSeconds := now.Sub(c.windowSince).Seconds()
+	dwellSeconds := now.Sub(ml.windowSince).Seconds()
 	sinceInput := secondsSinceLastInput()
 
 	// Pixel capture — prefer DXGI on the primary display (index 0).

@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -185,6 +186,9 @@ func (c *Config) validate() error {
 	}
 	if c.Inference.OllamaURL == "" {
 		return fmt.Errorf("inference.ollama_url must not be empty")
+	}
+	if u, err := url.Parse(c.Inference.OllamaURL); err != nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") {
+		return fmt.Errorf("inference.ollama_url must point to localhost (got %q): Digital Ghost is air-gapped and must not send data to remote hosts", c.Inference.OllamaURL)
 	}
 	if c.Inference.Model == "" {
 		return fmt.Errorf("inference.model must not be empty")

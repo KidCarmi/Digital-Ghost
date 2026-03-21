@@ -20,6 +20,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -243,7 +244,9 @@ func secureDeleteFile(path string) error {
 		written := int64(0)
 		for written < size {
 			toWrite := min(int64(len(buf)), size-written)
-			urandom.Read(buf[:toWrite])
+			if _, err := io.ReadFull(urandom, buf[:toWrite]); err != nil {
+				break
+			}
 			n, writeErr := f.Write(buf[:toWrite])
 			if writeErr != nil {
 				break
