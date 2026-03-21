@@ -18,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -68,6 +69,12 @@ func run() error {
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+	// In Go 1.21+, slog.SetDefault also bridges the legacy log package to slog
+	// at INFO level. fyne.io/systray uses log.Println() internally and emits
+	// benign Windows quirk messages (e.g. "The operation completed successfully.")
+	// that pollute our structured log. Silence the legacy logger — we use slog
+	// exclusively for our own logging.
+	log.SetOutput(io.Discard)
 
 	// ── Step 2: Load configuration ────────────────────────────────────────────
 	cfg, err := config.Load(*configPath)

@@ -161,6 +161,10 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	embedding, err := s.client.Embed(ctx, q)
 	if err != nil {
+		if ctx.Err() != nil {
+			s.logger.Debug("query: client disconnected during embed")
+			return
+		}
 		s.logger.Warn("embed failed during query", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "embedding failed: " + err.Error()})
 		return
@@ -221,6 +225,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	embedding, err := s.client.Embed(ctx, q)
 	if err != nil {
+		if ctx.Err() != nil {
+			// Client disconnected before we finished — not an error worth logging.
+			s.logger.Debug("chat: client disconnected during embed")
+			return
+		}
 		s.logger.Warn("chat: embed failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "embedding failed: " + err.Error()})
 		return
@@ -278,6 +287,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 		answer, err = s.client.Generate(ctx, prompt)
 		if err != nil {
+			if ctx.Err() != nil {
+				// Client disconnected before we could send the answer — silent, normal.
+				s.logger.Debug("chat: client disconnected during LLM generation")
+				return
+			}
 			s.logger.Warn("chat: LLM generation failed", "error", err)
 			// Degrade gracefully — return sources without an answer.
 			answer = ""
