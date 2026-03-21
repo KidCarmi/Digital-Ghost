@@ -40,17 +40,42 @@ var (
 
 // -- UI Automation vtable slot indices (from UIAutomationClient.h) -----------
 //
-// IUIAutomation (slots are 0-indexed; 0-2 are IUnknown):
+// IUIAutomation (slots are 0-indexed; 0-2 are IUnknown, own methods start at 3):
+//   3  = CompareElements
+//   4  = CompareRuntimeIds
+//   5  = GetRootElement
 //   6  = ElementFromHandle
-//   16 = CreatePropertyCondition
+//   7  = ElementFromPoint
+//   8  = GetFocusedElement
+//   9  = GetRootElementBuildCache
+//   10 = ElementFromHandleBuildCache
+//   11 = ElementFromPointBuildCache
+//   12 = GetFocusedElementBuildCache
+//   13 = CreateTreeWalker
+//   14 = get_ControlViewWalker
+//   15 = get_ContentViewWalker
+//   16 = get_RawViewWalker        ← NOT CreatePropertyCondition
+//   17 = get_RawViewCondition
+//   18 = get_ControlViewCondition
+//   19 = get_ContentViewCondition
+//   20 = CreateCacheRequest
+//   21 = CreateTrueCondition
+//   22 = CreateFalseCondition
+//   23 = CreatePropertyCondition
 //
-// IUIAutomationElement:
+// IUIAutomationElement (own methods start at 3):
+//   3  = SetFocus
+//   4  = GetRuntimeId
 //   5  = FindFirst
+//   6  = FindAll
+//   7  = FindFirstBuildCache
+//   8  = FindAllBuildCache
+//   9  = BuildUpdatedCache
 //   10 = GetCurrentPropertyValue
 
 const (
-	uiaSlotElementFromHandle      = 6
-	uiaSlotCreatePropertyCondition = 16
+	uiaSlotElementFromHandle       = 6
+	uiaSlotCreatePropertyCondition = 23
 	uiaElemSlotFindFirst           = 5
 	uiaElemSlotGetCurrentPropVal   = 10
 	iUnknownSlotRelease            = 2
