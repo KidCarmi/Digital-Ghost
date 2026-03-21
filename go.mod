@@ -1,6 +1,8 @@
 module github.com/KidCarmi/digital-ghost
 
-go 1.22
+go 1.23.0
+
+toolchain go1.24.7
 
 require (
 	github.com/corona10/goimagehash v1.1.0
@@ -12,8 +14,14 @@ require (
 require (
 	fyne.io/systray v1.12.0 // indirect
 	github.com/alessio/shellescape v1.4.1 // indirect
+	github.com/anthropics/anthropic-sdk-go v1.27.1 // indirect
 	github.com/danieljoos/wincred v1.2.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
-	golang.org/x/sys v0.21.0 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
+	golang.org/x/sync v0.16.0 // indirect
+	golang.org/x/sys v0.34.0 // indirect
 )
