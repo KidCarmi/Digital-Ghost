@@ -2,6 +2,8 @@
 /bin/
 /dist/
 /digitalghost
+/agents
+/dg-agents
 
 # Go
 *.test
