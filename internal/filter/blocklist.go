@@ -12,6 +12,7 @@ package filter
 
 import (
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"regexp"
@@ -377,8 +378,10 @@ func hardcodedDefaults() *compiledBlocklist {
 	// compile() can only fail on invalid regex; all patterns above are valid.
 	compiled, err := compile(cfg)
 	if err != nil {
-		// This is a programming error, not a runtime error.
-		panic(fmt.Sprintf("hardcoded blocklist has invalid regex: %v", err))
+		// Programming error: a regex in the shipped default blocklist is
+		// malformed. log.Fatalf prints to stderr and exits cleanly — no
+		// goroutine dump — so crash capture tools get a readable message.
+		log.Fatalf("BUG: hardcoded blocklist has invalid regex: %v", err)
 	}
 	return compiled
 }

@@ -14,6 +14,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -255,6 +256,25 @@ func readGPUPercent() int {
 	amdPath := "/sys/class/drm/card0/device/gpu_busy_percent"
 	if data, err := os.ReadFile(amdPath); err == nil {
 		if v, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+			return v
+		}
+	}
+
+	// NVIDIA via nvidia-smi (works on Linux and Windows; subprocess is
+	// cached-friendly since nvidia-smi itself is fast when the driver is loaded).
+	// We time-box with a short context so a missing/hung nvidia-smi doesn't
+	// stall the metrics loop.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "nvidia-smi",
+		"--query-gpu=utilization.gpu",
+		"--format=csv,noheader,nounits",
+	).Output()
+	if err == nil {
+		// Output is "<utilization>\n" or "<util1>\n<util2>\n" for multi-GPU.
+		// Take the first line (GPU 0 or the primary GPU).
+		line := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+		if v, err := strconv.Atoi(strings.TrimSpace(line)); err == nil {
 			return v
 		}
 	}

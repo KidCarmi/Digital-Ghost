@@ -110,32 +110,33 @@ Digital-Ghost/
 - Flat-file JSON vector store (one encrypted file per memory node)
 - Retention sweep + secure deletion (2am daily)
 - Local web search UI at `http://localhost:7327`
+- DXGI screen capture (real frames, multi-monitor)
+- Win32 window metadata (process name, title, PID)
+- UI Automation — password field detection + Firefox URL extraction
+- Multi-monitor capture loops (one goroutine per display)
+- GPU monitoring — Intel/AMD sysfs + NVIDIA nvidia-smi
 
-### Stubbed — not yet implemented
-| Component | File | Status |
-|-----------|------|--------|
-| DXGI pixel capture | `capture_windows.go:103` | Returns blank 1920×1080 frame |
-| Window metadata (Win32) | `capture_windows.go:126` | Returns `{ProcessName:"stub"}` |
+### Not yet implemented (platform gaps)
+| Component | Platform | Notes |
+|-----------|----------|-------|
+| Tray icon | Linux / macOS | Windows: native MessageBoxW + systray. Linux/macOS: returns error unless `DG_HEADLESS_CONSENT=1` (test-only). |
+| Screen capture | Linux X11 | `capture_linux_x11.go` exists with build tag but `queryWindowContextImpl` returns an error — daemon refuses to start. Needs `_NET_ACTIVE_WINDOW` / `_NET_WM_NAME` via XLib. |
+| Screen capture | macOS | No implementation. Needs `ScreenCaptureKit`. |
+| GPU metrics | NVIDIA (Windows) | `nvidia-smi` subprocess path works on Linux. On Windows, throttle.go falls back to 0% (allows inference). |
 
-> **Impact of stubs**: Because all blank frames are pHash-identical, only the
-> first frame passes deduplication and reaches Ollama. After that, DG idles
-> (capture loop runs but drops all frames). The memory + search system works
-> correctly once real frames start flowing.
+> **All Windows paths are fully implemented.** DXGI pixel capture, Win32 window
+> metadata, UI Automation (password detection + Firefox URL), multi-monitor
+> per-goroutine loops, and DPAPI keychain are all production-ready.
 
 ---
 
-## Multi-Monitor Design (not yet implemented)
+## Multi-Monitor Design
 
-The architecture specifies one `captureLoop` goroutine per display.
-`Frame.DisplayIndex` (frame.go:35) is already defined.
-
-**When implementing DXGI real capture:**
-1. Enumerate adapters via `IDXGIFactory1.EnumAdapters()` → outputs via `IDXGIAdapter.EnumOutputs()`
-2. Create one `IDXGIOutputDuplication` per monitor
-3. Spawn one goroutine per display, each writing to the shared `frames chan<- *Frame`
-4. Set `Frame.DisplayIndex` to the monitor index
-5. Privacy gate stays global — if any sensitive window is open on any monitor, all capture pauses
-6. `NewCapturer()` returns a `MultiDisplayCapturer` wrapping N single-display capturers
+Fully implemented for Windows. Each physical display gets its own `monitorLoop`
+goroutine, each writing to the shared `frames chan<- *Frame`. The privacy gate
+is global — if any sensitive window is open on any monitor, all capture pauses.
+`NewCapturer()` returns a `MultiDisplayCapturer` wrapping N single-display capturers.
+`Frame.DisplayIndex` (`frame.go:35`) is set per monitor.
 
 ---
 

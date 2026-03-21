@@ -65,14 +65,16 @@ type Server struct {
 }
 
 // New creates a Server. Call Run() to start listening.
-func New(store *storage.Store, client *inference.Client, model string, logger *slog.Logger) *Server {
+// Returns an error if the OS CSPRNG is unavailable (effectively impossible
+// on any supported platform, but handled explicitly rather than via panic).
+func New(store *storage.Store, client *inference.Client, model string, logger *slog.Logger) (*Server, error) {
 	// Generate a random CSRF token for this server lifetime.
 	// Any request to a mutating endpoint must supply this token as
 	// X-DG-CSRF-Token. Cross-origin pages cannot read the token from the UI
 	// (CORS), so they cannot forge valid mutating requests.
 	var tokenBytes [16]byte
 	if _, err := rand.Read(tokenBytes[:]); err != nil {
-		panic(fmt.Sprintf("CSRF token generation failed: %v", err))
+		return nil, fmt.Errorf("CSRF token generation failed: %w", err)
 	}
 	csrfToken := hex.EncodeToString(tokenBytes[:])
 
@@ -100,7 +102,7 @@ func New(store *storage.Store, client *inference.Client, model string, logger *s
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 150 * time.Second, // chat endpoint can take up to ~90s for LLM cold-start
 	}
-	return s
+	return s, nil
 }
 
 // Run starts the HTTP server. Blocks until the context is cancelled.

@@ -256,7 +256,10 @@ func run() error {
 		<-stopCh
 		apiCancel()
 	}()
-	apiServer := api.New(store, ollamaClient, cfg.Inference.Model, logger)
+	apiServer, err := api.New(store, ollamaClient, cfg.Inference.Model, logger)
+	if err != nil {
+		return fmt.Errorf("creating API server: %w", err)
+	}
 	go func() {
 		if err := apiServer.Run(apiCtx); err != nil {
 			logger.Warn("API server stopped", "error", err)

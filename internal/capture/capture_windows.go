@@ -316,7 +316,7 @@ func (ml *monitorLoop) run(stopCh <-chan struct{}) {
 			case c.frames <- frame:
 				ml.prevFrame = frame
 			default:
-				c.logger.Debug("frame queue full; dropping frame",
+				c.logger.Warn("frame queue full; dropping frame — inference too slow or queue too small",
 					"display", ml.displayIdx)
 			}
 		}
