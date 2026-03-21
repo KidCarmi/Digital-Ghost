@@ -118,11 +118,26 @@ func run() error {
 	}
 
 	// ── Step 5: System tray icon ──────────────────────────────────────────────
+	// gate is created after the blocklist below, but we need stopCh now.
+	// Pause/resume callbacks are wired to gate.Pause()/gate.Resume() below.
 	stopCh := make(chan struct{})
-	if err := tray.StartTrayIcon(func() {
-		logger.Info("stop requested via tray icon")
-		close(stopCh)
-	}); err != nil {
+	var pauseCallback, resumeCallback func()
+	if err := tray.StartTrayIcon(
+		func() { // onStop
+			logger.Info("stop requested via tray icon")
+			close(stopCh)
+		},
+		func() { // onPause — forward to gate once it's initialised
+			if pauseCallback != nil {
+				pauseCallback()
+			}
+		},
+		func() { // onResume — forward to gate once it's initialised
+			if resumeCallback != nil {
+				resumeCallback()
+			}
+		},
+	); err != nil {
 		return fmt.Errorf("tray icon failed to start: %w\n\n"+
 			"Digital Ghost requires a visible tray icon to maintain transparency.\n"+
 			"There is no headless/background mode.\n"+
@@ -157,6 +172,17 @@ func run() error {
 	defer blocklist.Close()
 
 	gate := capture.NewGate(blocklist, logger)
+
+	// Wire tray pause/resume callbacks to the gate now that it exists.
+	pauseCallback = func() {
+		gate.Pause()
+		logger.Info("capture paused by user")
+	}
+	resumeCallback = func() {
+		gate.Resume()
+		logger.Info("capture resumed by user")
+	}
+
 	frameQueue := inference.NewQueue(cfg.Capture.QueueDepth, logger)
 	governor := inference.NewGovernor(cfg.ResourceBudget, logger)
 	defer governor.Close()

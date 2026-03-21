@@ -3,9 +3,16 @@
 package tray
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"os/exec"
+	"time"
 	"unsafe"
 
+	"fyne.io/systray"
 	"golang.org/x/sys/windows"
 )
 
@@ -63,8 +70,90 @@ func showConsentDialogImpl(text string) (bool, error) {
 	return ret == idYes, nil
 }
 
-// startTrayIconImpl is a stub on Windows for now.
-// Production: use github.com/getlantern/systray or fyne.io/systray.
-func startTrayIconImpl(_ func()) error {
-	return nil
+// startTrayIconImpl launches the Windows system tray icon using fyne.io/systray.
+//
+// Blocks until the icon is visible in the taskbar (or returns an error after
+// 3 seconds). The icon and its event loop then continue in a background
+// goroutine for the lifetime of the process.
+//
+// Menu:
+//
+//	Pause Capture   (toggles to Resume Capture when paused)
+//	Open Search UI
+//	──────────────
+//	Stop Digital Ghost
+func startTrayIconImpl(onStop, onPause, onResume func()) error {
+	ready := make(chan error, 1)
+
+	go func() {
+		systray.Run(func() {
+			systray.SetIcon(trayIconPNG())
+			systray.SetTooltip("Digital Ghost — capturing")
+
+			mPause := systray.AddMenuItem("Pause Capture", "Temporarily pause screen capture")
+			mResume := systray.AddMenuItem("Resume Capture", "Resume screen capture")
+			mResume.Hide()
+			mOpen := systray.AddMenuItem("Open Search UI", "Open the memory search interface in your browser")
+			systray.AddSeparator()
+			mStop := systray.AddMenuItem("Stop Digital Ghost", "Shut down Digital Ghost")
+
+			ready <- nil // tray is live; unblock startTrayIconImpl
+
+			for {
+				select {
+				case <-mPause.ClickedCh:
+					onPause()
+					mPause.Hide()
+					mResume.Show()
+					systray.SetTooltip("Digital Ghost — PAUSED")
+
+				case <-mResume.ClickedCh:
+					onResume()
+					mResume.Hide()
+					mPause.Show()
+					systray.SetTooltip("Digital Ghost — capturing")
+
+				case <-mOpen.ClickedCh:
+					// Open the local search UI in the default browser.
+					exec.Command("cmd", "/c", "start", "http://localhost:7327").Start() //nolint:errcheck
+
+				case <-mStop.ClickedCh:
+					systray.Quit()
+					onStop()
+					return
+				}
+			}
+		}, func() {
+			// onExit — daemon shutdown is handled by onStop callback above.
+		})
+	}()
+
+	select {
+	case err := <-ready:
+		return err
+	case <-time.After(3 * time.Second):
+		return fmt.Errorf("tray icon initialization timed out")
+	}
+}
+
+// trayIconPNG returns a 32×32 PNG of a filled purple circle — the DG logo.
+// Generated programmatically to avoid embedding a binary asset file.
+func trayIconPNG() []byte {
+	const size = 32
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	cx, cy := float64(size)/2, float64(size)/2
+	r := float64(size)/2 - 1
+	purple := color.NRGBA{R: 0x7c, G: 0x3a, B: 0xed, A: 0xff}
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			dx := float64(x) + 0.5 - cx
+			dy := float64(y) + 0.5 - cy
+			if dx*dx+dy*dy <= r*r {
+				img.SetNRGBA(x, y, purple)
+			}
+		}
+	}
+	var buf bytes.Buffer
+	png.Encode(&buf, img) //nolint:errcheck
+	return buf.Bytes()
 }

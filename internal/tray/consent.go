@@ -190,6 +190,11 @@ func dialogHash() string {
 //
 // The tray icon remains visible for the lifetime of the process. If it
 // disappears (e.g., compositor crash), the capture loop must be halted.
-func StartTrayIcon(onStop func()) error {
-	return startTrayIconImpl(onStop)
+//
+// Callbacks:
+//   - onStop   called when the user selects Stop from the tray menu
+//   - onPause  called when the user selects Pause — caller should Gate.Pause()
+//   - onResume called when the user selects Resume — caller should Gate.Resume()
+func StartTrayIcon(onStop, onPause, onResume func()) error {
+	return startTrayIconImpl(onStop, onPause, onResume)
 }

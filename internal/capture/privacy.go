@@ -22,7 +22,7 @@ package capture
 import (
 	"fmt"
 	"log/slog"
-	"strings"
+	"sync/atomic"
 
 	"github.com/KidCarmi/digital-ghost/internal/filter"
 )
@@ -32,7 +32,18 @@ import (
 type Gate struct {
 	blocklist *filter.Blocklist
 	logger    *slog.Logger
+	paused    atomic.Bool // set by tray pause/resume; never persisted to disk
 }
+
+// Pause suspends capture. The gate still evaluates window metadata on every
+// tick so that blocked windows (password managers, banking sites) are detected
+// even while paused, and captures are correctly suppressed on resume.
+func (g *Gate) Pause() { g.paused.Store(true) }
+
+// Resume re-enables capture. The next Check() call evaluates the gate fresh —
+// if the foreground window changed to a blocked app while paused, it will
+// still be blocked on resume.
+func (g *Gate) Resume() { g.paused.Store(false) }
 
 // GateResult describes the gate's decision for a single capture opportunity.
 type GateResult struct {
@@ -80,14 +91,7 @@ func (g *Gate) Check() GateResult {
 		return GateResult{Blocked: true, Reason: decision.Reason}
 	}
 
-	// Step 3: Block capture of the Digital Ghost UI itself.
-	// The search UI runs on :7327 — capturing it would be circular and useless.
-	// This is a hard system invariant, not a user-configurable preference.
-	if strings.Contains(ctx.BrowserURL, ":7327") {
-		return GateResult{Blocked: true, Reason: "dg_ui_self_exclusion"}
-	}
-
-	// Step 4: Check for sensitive input role even if process is not on the blocklist.
+	// Step 3: Check for sensitive input role even if process is not on the blocklist.
 	// This catches password fields in otherwise-allowed applications (e.g., a browser
 	// not currently on a banking URL, but with a focused password input).
 	if ctx.FocusedInputRole != "" {
@@ -104,6 +108,14 @@ func (g *Gate) Check() GateResult {
 				Reason:  fmt.Sprintf("sensitive_input_focused:%s", ctx.FocusedInputRole),
 			}
 		}
+	}
+
+	// Step 4: Check if the user has paused capture via the tray icon.
+	// The gate runs all checks above even while paused so that blocked windows
+	// (password managers, banking URLs) are detected during the pause period.
+	// On resume, the next Check() sees the current window state fresh.
+	if g.paused.Load() {
+		return GateResult{Blocked: true, Reason: "capture_paused"}
 	}
 
 	return GateResult{

@@ -12,8 +12,8 @@ import (
 )
 
 // startTrayIconImpl is implemented per-platform.
-// See tray_linux.go, tray_darwin.go, tray_windows.go.
-func startTrayIconImpl(onStop func()) error {
+// See consent_windows.go for the Windows implementation.
+func startTrayIconImpl(onStop, onPause, onResume func()) error {
 	// Stub: real implementations use systray or platform-native APIs.
 	// Returns nil for headless/test environments.
 	if os.Getenv("DG_HEADLESS_CONSENT") == "1" {

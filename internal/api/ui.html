@@ -200,6 +200,9 @@
 </div>
 
 <script>
+  // CSRF token injected at server startup — unique per process lifetime.
+  const CSRF_TOKEN = '__CSRF_TOKEN__';
+
   const qEl  = document.getElementById('q');
   const btn  = document.getElementById('btn');
   const res  = document.getElementById('results');
@@ -303,7 +306,10 @@
     delStatus.textContent = 'Deleting…';
 
     try {
-      const r = await fetch('/api/delete?range=' + range, { method: 'POST' });
+      const r = await fetch('/api/delete?range=' + range, {
+        method: 'POST',
+        headers: { 'X-DG-CSRF-Token': CSRF_TOKEN },
+      });
       const d = await r.json();
       if (!r.ok) {
         delStatus.textContent = 'Error: ' + (d.error || 'delete failed');

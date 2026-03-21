@@ -11,7 +11,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -52,16 +54,35 @@ type StatusResponse struct {
 
 // Server is the Digital Ghost local HTTP server.
 type Server struct {
-	store  *storage.Store
-	client *inference.Client
-	model  string
-	logger *slog.Logger
-	srv    *http.Server
+	store     *storage.Store
+	client    *inference.Client
+	model     string
+	logger    *slog.Logger
+	srv       *http.Server
+	csrfToken string // random token generated at startup; required on mutating endpoints
+	uiHTML    []byte // ui.html with __CSRF_TOKEN__ substituted
 }
 
 // New creates a Server. Call Run() to start listening.
 func New(store *storage.Store, client *inference.Client, model string, logger *slog.Logger) *Server {
-	s := &Server{store: store, client: client, model: model, logger: logger}
+	// Generate a random CSRF token for this server lifetime.
+	// Any request to a mutating endpoint must supply this token as
+	// X-DG-CSRF-Token. Cross-origin pages cannot read the token from the UI
+	// (CORS), so they cannot forge valid mutating requests.
+	var tokenBytes [16]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		panic(fmt.Sprintf("CSRF token generation failed: %v", err))
+	}
+	csrfToken := hex.EncodeToString(tokenBytes[:])
+
+	s := &Server{
+		store:     store,
+		client:    client,
+		model:     model,
+		logger:    logger,
+		csrfToken: csrfToken,
+		uiHTML:    bytes.ReplaceAll(uiHTML, []byte("__CSRF_TOKEN__"), []byte(csrfToken)),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleUI)
@@ -109,7 +130,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(uiHTML)
+	w.Write(s.uiHTML)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -275,6 +296,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "use POST"})
+		return
+	}
+
+	// CSRF check: any page the user browses to can POST to localhost:7327 via
+	// a form submission (no CORS preflight). The custom header cannot be added
+	// by a cross-origin form, only by our own UI (same-origin fetch/XHR).
+	if r.Header.Get("X-DG-CSRF-Token") != s.csrfToken {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing CSRF token"})
 		return
 	}
 

@@ -342,7 +342,13 @@ func extractBrowserURL(hwnd uintptr, processName string) string {
 
 	state := &browserURLState{}
 	procEnumChildWindows.Call(hwnd, enumChildWindowsCallback, uintptr(unsafe.Pointer(state)))
-	return state.url
+	if state.url != "" {
+		return state.url
+	}
+
+	// EnumChildWindows found no Chromium omnibox control. Fall back to
+	// IUIAutomation — this handles Firefox and any other accessible browser.
+	return queryBrowserURLViaUIA(hwnd)
 }
 
 func (c *WindowsCapturer) captureFrame() (*Frame, error) {

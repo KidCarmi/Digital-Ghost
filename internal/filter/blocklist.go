@@ -342,6 +342,9 @@ func hardcodedDefaults() *compiledBlocklist {
 		"consent.exe",
 	}
 	urlPatterns := []string{
+		// Digital Ghost's own search UI — capturing it is circular and useless.
+		// This is a hard system invariant baked into defaults (not user-editable).
+		`(?i)^https?://(127\.0\.0\.1|localhost):7327(/|$)`,
 		`(?i)bank`, `(?i)banking`,
 		`(?i)paypal\.com`, `(?i)stripe\.com/dashboard`,
 		`(?i)\.irs\.gov`, `(?i)turbotax\.com`,
