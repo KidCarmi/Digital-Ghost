@@ -94,10 +94,10 @@ func Defaults() Config {
 		},
 		ResourceBudget: ResourceBudgetConfig{
 			MaxCPUPct:          20,
-			MaxGPUPct:          15,
+			MaxGPUPct:          60, // llava:7b always spikes GPU post-inference; 30 was too conservative
 			MaxInferencePerMin: 6,
 			CPUIdleThreshold:   40,
-			GPUIdleThreshold:   30,
+			GPUIdleThreshold:   60,
 		},
 		Inference: InferenceConfig{
 			OllamaURL:  "http://127.0.0.1:11434",

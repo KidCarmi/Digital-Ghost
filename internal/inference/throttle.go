@@ -112,15 +112,18 @@ func (g *Governor) Acquire(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			// Rate limit reached. Wait for next refill.
+			// Rate limit reached. Block until the next token arrives or ctx
+			// is cancelled. No polling loop — the refillLoop will send the
+			// token directly into the channel when it's ready, so we just
+			// wait on the channel itself. This eliminates the 2s-poll spam
+			// in the debug log ("governor waiting: rate limit reached" every
+			// 2 seconds) and wakes up instantly on the next refill tick.
 			g.logger.Debug("governor waiting: rate limit reached")
-			t := time.NewTimer(2 * time.Second)
 			select {
+			case <-g.tokenBucket:
+				return nil
 			case <-ctx.Done():
-				t.Stop()
 				return ctx.Err()
-			case <-t.C:
-				// Re-check on next iteration.
 			}
 		}
 	}
