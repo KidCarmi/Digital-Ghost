@@ -38,17 +38,48 @@ import (
 )
 
 var (
-	user32                  = syscall.NewLazyDLL("user32.dll")
-	kernel32                = syscall.NewLazyDLL("kernel32.dll")
-	procGetForegroundWindow = user32.NewProc("GetForegroundWindow")
-	procGetWindowTextW      = user32.NewProc("GetWindowTextW")
-	procGetWindowThreadPID  = user32.NewProc("GetWindowThreadProcessId")
-	procOpenProcess         = kernel32.NewProc("OpenProcess")
+	user32                         = syscall.NewLazyDLL("user32.dll")
+	kernel32                       = syscall.NewLazyDLL("kernel32.dll")
+	gdi32                          = syscall.NewLazyDLL("gdi32.dll")
+	procGetForegroundWindow        = user32.NewProc("GetForegroundWindow")
+	procGetWindowTextW             = user32.NewProc("GetWindowTextW")
+	procGetWindowThreadPID         = user32.NewProc("GetWindowThreadProcessId")
+	procGetSystemMetrics           = user32.NewProc("GetSystemMetrics")
+	procOpenProcess                = kernel32.NewProc("OpenProcess")
 	procQueryFullProcessImageNameW = kernel32.NewProc("QueryFullProcessImageNameW")
-	procCloseHandle         = kernel32.NewProc("CloseHandle")
+	procCloseHandle                = kernel32.NewProc("CloseHandle")
+	procCreateDC                   = gdi32.NewProc("CreateDCW")
+	procDeleteDC                   = gdi32.NewProc("DeleteDC")
+	procCreateCompatibleDC         = gdi32.NewProc("CreateCompatibleDC")
+	procCreateCompatibleBitmap     = gdi32.NewProc("CreateCompatibleBitmap")
+	procSelectObject               = gdi32.NewProc("SelectObject")
+	procDeleteObject               = gdi32.NewProc("DeleteObject")
+	procBitBlt                     = gdi32.NewProc("BitBlt")
+	procGetDIBits                  = gdi32.NewProc("GetDIBits")
 )
 
-const processQueryLimitedInformation = 0x1000
+const (
+	processQueryLimitedInformation = 0x1000
+	srccopy                        = 0x00CC0020
+	dibRGBColors                   = 0
+	smCxScreen                     = 0
+	smCyScreen                     = 1
+)
+
+// bitmapInfoHeader mirrors the Win32 BITMAPINFOHEADER structure.
+type bitmapInfoHeader struct {
+	biSize          uint32
+	biWidth         int32
+	biHeight        int32
+	biPlanes        uint16
+	biBitCount      uint16
+	biCompression   uint32
+	biSizeImage     uint32
+	biXPelsPerMeter int32
+	biYPelsPerMeter int32
+	biClrUsed       uint32
+	biClrImportant  uint32
+}
 
 // WindowsCapturer captures frames using DXGI Desktop Duplication.
 type WindowsCapturer struct {
@@ -71,7 +102,7 @@ func NewWindowsCapturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, lo
 
 // Run starts the DXGI capture loop. Blocks until stopCh is closed.
 func (c *WindowsCapturer) Run(stopCh <-chan struct{}) error {
-	c.logger.Info("Windows DXGI capture loop started")
+	c.logger.Info("Windows GDI capture loop started")
 	ticker := time.NewTicker(frameDuration(c.cfg.Capture.FPS))
 	defer ticker.Stop()
 
@@ -80,12 +111,12 @@ func (c *WindowsCapturer) Run(stopCh <-chan struct{}) error {
 	for {
 		select {
 		case <-stopCh:
-			c.logger.Info("Windows DXGI capture loop stopped")
+			c.logger.Info("Windows GDI capture loop stopped")
 			return nil
 		case <-ticker.C:
 			frame, err := c.captureFrame()
 			if err != nil {
-				c.logger.Warn("DXGI frame capture failed", "error", err)
+				c.logger.Warn("GDI frame capture failed", "error", err)
 				continue
 			}
 			if frame == nil {
@@ -109,6 +140,81 @@ func (c *WindowsCapturer) Run(stopCh <-chan struct{}) error {
 	}
 }
 
+// captureScreenGDI captures the primary display using the GDI BitBlt path.
+// No CGO or D3D11 required; uses only Win32 DLL calls via syscall.
+// Returns an *image.RGBA in top-down order with RGBA byte layout.
+func captureScreenGDI() (*image.RGBA, error) {
+	w, _, _ := procGetSystemMetrics.Call(smCxScreen)
+	h, _, _ := procGetSystemMetrics.Call(smCyScreen)
+	width, height := int(w), int(h)
+	if width == 0 || height == 0 {
+		return nil, fmt.Errorf("GetSystemMetrics returned zero dimensions")
+	}
+
+	display, err := syscall.UTF16PtrFromString("DISPLAY")
+	if err != nil {
+		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
+	}
+
+	hScreenDC, _, _ := procCreateDC.Call(uintptr(unsafe.Pointer(display)), 0, 0, 0)
+	if hScreenDC == 0 {
+		return nil, fmt.Errorf("CreateDC(DISPLAY) failed")
+	}
+	defer procDeleteDC.Call(hScreenDC)
+
+	hMemDC, _, _ := procCreateCompatibleDC.Call(hScreenDC)
+	if hMemDC == 0 {
+		return nil, fmt.Errorf("CreateCompatibleDC failed")
+	}
+	defer procDeleteDC.Call(hMemDC)
+
+	hBitmap, _, _ := procCreateCompatibleBitmap.Call(hScreenDC, uintptr(width), uintptr(height))
+	if hBitmap == 0 {
+		return nil, fmt.Errorf("CreateCompatibleBitmap failed")
+	}
+	defer procDeleteObject.Call(hBitmap)
+
+	procSelectObject.Call(hMemDC, hBitmap)
+
+	ret, _, _ := procBitBlt.Call(hMemDC, 0, 0, uintptr(width), uintptr(height), hScreenDC, 0, 0, srccopy)
+	if ret == 0 {
+		return nil, fmt.Errorf("BitBlt failed")
+	}
+
+	// GetDIBits extracts raw pixel bytes. biHeight < 0 = top-down DIB.
+	bmi := bitmapInfoHeader{
+		biSize:     40, // sizeof(BITMAPINFOHEADER)
+		biWidth:    int32(width),
+		biHeight:   -int32(height),
+		biPlanes:   1,
+		biBitCount: 32,
+		// biCompression = 0 = BI_RGB
+	}
+	pixels := make([]byte, width*height*4)
+	ret, _, _ = procGetDIBits.Call(
+		hScreenDC,
+		hBitmap,
+		0,
+		uintptr(height),
+		uintptr(unsafe.Pointer(&pixels[0])),
+		uintptr(unsafe.Pointer(&bmi)),
+		dibRGBColors,
+	)
+	if ret == 0 {
+		return nil, fmt.Errorf("GetDIBits failed")
+	}
+
+	// GDI returns pixels in BGRA order; image.RGBA expects RGBA.
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for i := 0; i < width*height; i++ {
+		img.Pix[i*4+0] = pixels[i*4+2] // R ← B
+		img.Pix[i*4+1] = pixels[i*4+1] // G ← G
+		img.Pix[i*4+2] = pixels[i*4+0] // B ← R
+		img.Pix[i*4+3] = 0xFF
+	}
+	return img, nil
+}
+
 func (c *WindowsCapturer) captureFrame() (*Frame, error) {
 	// GATE CHECK MUST BE FIRST — before any pixel buffer allocation.
 	result := c.gate.Check()
@@ -117,10 +223,9 @@ func (c *WindowsCapturer) captureFrame() (*Frame, error) {
 		return nil, nil
 	}
 
-	// Production: AcquireNextFrame() → map texture → copy to image.RGBA.
-	img := image.NewRGBA(image.Rect(0, 0, 1920, 1080)) // stub
-	if img == nil {
-		return nil, fmt.Errorf("DXGI AcquireNextFrame returned nil")
+	img, err := captureScreenGDI()
+	if err != nil {
+		return nil, fmt.Errorf("GDI capture: %w", err)
 	}
 
 	frame := &Frame{
