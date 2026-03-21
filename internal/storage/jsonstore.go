@@ -188,6 +188,24 @@ func (s *JSONStore) ListOlderThan(_ context.Context, _ string, before time.Time)
 	return ids, nil
 }
 
+func (s *JSONStore) Count(_ context.Context, _ string) (int, time.Time, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entries, err := s.loadIndex()
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+
+	var latest time.Time
+	for _, e := range entries {
+		if e.Timestamp.After(latest) {
+			latest = e.Timestamp
+		}
+	}
+	return len(entries), latest, nil
+}
+
 func (s *JSONStore) Close() error { return nil }
 
 // -- helpers ----------------------------------------------------------------

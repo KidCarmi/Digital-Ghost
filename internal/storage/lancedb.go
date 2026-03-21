@@ -83,6 +83,10 @@ type lanceDBConn interface {
 	// ListOlderThan lists node IDs with timestamps before the given time.
 	ListOlderThan(ctx context.Context, table string, before time.Time) ([][16]byte, error)
 
+	// Count returns the total number of stored nodes and the timestamp of the
+	// most recently captured one (zero Time if no nodes exist).
+	Count(ctx context.Context, table string) (int, time.Time, error)
+
 	// Close releases the database connection.
 	Close() error
 }
@@ -166,6 +170,11 @@ func (s *Store) Delete(ctx context.Context, nodeID [16]byte) error {
 	}
 	s.logger.Info("deleted memory node", "node_id", fmt.Sprintf("%x", nodeID))
 	return nil
+}
+
+// Stats returns the total node count and the timestamp of the most recent capture.
+func (s *Store) Stats(ctx context.Context) (count int, lastCapture time.Time, err error) {
+	return s.db.Count(ctx, defaultTable)
 }
 
 // Close releases the database connection.

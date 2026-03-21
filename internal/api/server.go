@@ -109,7 +109,15 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	resp := StatusResponse{Model: s.model}
+	count, lastCapture, err := s.store.Stats(r.Context())
+	if err != nil {
+		s.logger.Warn("stats query failed", "error", err)
+	}
+	resp := StatusResponse{
+		Nodes:       count,
+		Model:       s.model,
+		LastCapture: lastCapture,
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
