@@ -88,10 +88,11 @@ func (c *Checker) Check(ctx context.Context, embedding []float32) (CoherenceScor
 	}
 
 	if len(neighbors) == 0 {
-		// No existing nodes — first node ever stored, or graph is empty.
-		// Treat as incoherent (will require higher engagement threshold).
-		c.logger.Debug("coherence check: graph empty, treating as isolated node")
-		return CoherenceScore{MaxSimilarity: 0, IsCoherent: false}, nil
+		// No existing nodes — bootstrap case (empty graph).
+		// Cannot be incoherent with a graph that doesn't exist yet, so let the
+		// normal MinEngagementScore threshold apply rather than IsolatedNodeScore.
+		c.logger.Debug("coherence check: graph empty, bootstrap — treating as coherent")
+		return CoherenceScore{MaxSimilarity: 0, IsCoherent: true}, nil
 	}
 
 	maxSim := -1.0
