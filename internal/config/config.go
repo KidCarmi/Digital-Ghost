@@ -84,7 +84,7 @@ func Defaults() Config {
 		Inference: InferenceConfig{
 			OllamaURL:  "http://127.0.0.1:11434",
 			Model:      "llava:7b",
-			TimeoutSec: 30,
+			TimeoutSec: 120, // llava:7b cold-start can take 60-90s on first load
 			MaxRetries: 2,
 		},
 		SemanticFilter: SemanticFilterConfig{
