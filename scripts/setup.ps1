@@ -266,7 +266,14 @@ function Test-OllamaModel {
         return
     }
     Write-Info "Pulling $DEFAULT_MODEL (~4.5 GB - this will take a while)..."
-    ollama pull $DEFAULT_MODEL
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & ollama pull $DEFAULT_MODEL 2>&1 | ForEach-Object {
+        # Strip ANSI/VT control sequences before printing
+        ($_ -replace '\x1b\[[0-9;?]*[A-Za-z]', '') -replace '\x0d', '' |
+            Where-Object { $_ -match '\S' } | ForEach-Object { Write-Host $_ }
+    }
+    $ErrorActionPreference = $prevPref
     Write-Ok "$DEFAULT_MODEL pulled"
 }
 
