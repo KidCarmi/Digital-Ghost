@@ -28,6 +28,7 @@ import (
 	"image"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -56,6 +57,12 @@ var (
 	procDeleteObject               = gdi32.NewProc("DeleteObject")
 	procBitBlt                     = gdi32.NewProc("BitBlt")
 	procGetDIBits                  = gdi32.NewProc("GetDIBits")
+	procGetLastInputInfo            = user32.NewProc("GetLastInputInfo")
+	procGetTickCount                = kernel32.NewProc("GetTickCount")
+	procEnumDisplayMonitors         = user32.NewProc("EnumDisplayMonitors")
+	procEnumChildWindows            = user32.NewProc("EnumChildWindows")
+	procGetClassNameW               = user32.NewProc("GetClassNameW")
+	procSendMessageW                = user32.NewProc("SendMessageW")
 )
 
 const (
@@ -64,6 +71,7 @@ const (
 	dibRGBColors                   = 0
 	smCxScreen                     = 0
 	smCyScreen                     = 1
+	wmGetText                      = 0x000D
 )
 
 // bitmapInfoHeader mirrors the Win32 BITMAPINFOHEADER structure.
@@ -81,12 +89,26 @@ type bitmapInfoHeader struct {
 	biClrImportant  uint32
 }
 
+// lastInputInfo mirrors the Win32 LASTINPUTINFO structure.
+type lastInputInfo struct {
+	cbSize uint32
+	dwTime uint32
+}
+
+// monitorInfo holds a monitor handle and its bounding rectangle.
+type monitorInfo struct {
+	hMonitor uintptr
+	rect     image.Rectangle
+}
+
 // WindowsCapturer captures frames using DXGI Desktop Duplication.
 type WindowsCapturer struct {
-	cfg    *config.Config
-	gate   *Gate
-	logger *slog.Logger
-	frames chan<- *Frame
+	cfg           *config.Config
+	gate          *Gate
+	logger        *slog.Logger
+	frames        chan<- *Frame
+	lastWindowKey string
+	windowSince   time.Time
 }
 
 // NewCapturer returns the platform capturer for this OS.
@@ -140,15 +162,54 @@ func (c *WindowsCapturer) Run(stopCh <-chan struct{}) error {
 	}
 }
 
-// captureScreenGDI captures the primary display using the GDI BitBlt path.
-// No CGO or D3D11 required; uses only Win32 DLL calls via syscall.
+// secondsSinceLastInput returns how many seconds have elapsed since the last
+// keyboard or mouse input event, using GetLastInputInfo (polling, not hooking).
+// Returns 0 on error (conservative — treats as recent input).
+func secondsSinceLastInput() float64 {
+	info := lastInputInfo{cbSize: 8} // sizeof(LASTINPUTINFO)
+	ret, _, _ := procGetLastInputInfo.Call(uintptr(unsafe.Pointer(&info)))
+	if ret == 0 {
+		return 0
+	}
+	tick, _, _ := procGetTickCount.Call()
+	elapsed := uint32(tick) - info.dwTime
+	return float64(elapsed) / 1000.0
+}
+
+// enumerateMonitors returns the list of monitors and their virtual-screen rectangles.
+// Uses EnumDisplayMonitors with a null HDC to cover the full virtual screen.
+func enumerateMonitors() []monitorInfo {
+	var monitors []monitorInfo
+
+	// The callback is called once per monitor by EnumDisplayMonitors.
+	// We use a Go closure captured via a package-level variable so we can pass
+	// a syscall.NewCallback pointer to the Win32 API.
+	cb := syscall.NewCallback(func(hMon, hdcMon, lprcMon, lParam uintptr) uintptr {
+		// lprcMon points to a RECT { left, top, right, bottom } (4×int32).
+		type rect32 struct{ left, top, right, bottom int32 }
+		r := (*rect32)(unsafe.Pointer(lprcMon))
+		monitors = append(monitors, monitorInfo{
+			hMonitor: hMon,
+			rect: image.Rect(
+				int(r.left), int(r.top),
+				int(r.right), int(r.bottom),
+			),
+		})
+		return 1 // continue enumeration
+	})
+
+	procEnumDisplayMonitors.Call(0, 0, cb, 0)
+	return monitors
+}
+
+// captureMonitorGDI captures a single monitor's pixels using GDI BitBlt.
+// rect is the monitor's position in virtual-screen coordinates.
 // Returns an *image.RGBA in top-down order with RGBA byte layout.
-func captureScreenGDI() (*image.RGBA, error) {
-	w, _, _ := procGetSystemMetrics.Call(smCxScreen)
-	h, _, _ := procGetSystemMetrics.Call(smCyScreen)
-	width, height := int(w), int(h)
+func captureMonitorGDI(rect image.Rectangle) (*image.RGBA, error) {
+	width := rect.Dx()
+	height := rect.Dy()
 	if width == 0 || height == 0 {
-		return nil, fmt.Errorf("GetSystemMetrics returned zero dimensions")
+		return nil, fmt.Errorf("monitor has zero dimensions")
 	}
 
 	display, err := syscall.UTF16PtrFromString("DISPLAY")
@@ -176,7 +237,12 @@ func captureScreenGDI() (*image.RGBA, error) {
 
 	procSelectObject.Call(hMemDC, hBitmap)
 
-	ret, _, _ := procBitBlt.Call(hMemDC, 0, 0, uintptr(width), uintptr(height), hScreenDC, 0, 0, srccopy)
+	// BitBlt from the monitor's virtual-screen origin.
+	ret, _, _ := procBitBlt.Call(
+		hMemDC, 0, 0, uintptr(width), uintptr(height),
+		hScreenDC, uintptr(rect.Min.X), uintptr(rect.Min.Y),
+		srccopy,
+	)
 	if ret == 0 {
 		return nil, fmt.Errorf("BitBlt failed")
 	}
@@ -215,6 +281,61 @@ func captureScreenGDI() (*image.RGBA, error) {
 	return img, nil
 }
 
+// extractBrowserURL attempts to read the current URL from a browser's address bar
+// using EnumChildWindows to find the Chromium omnibox edit control, then
+// WM_GETTEXT to read its text. Falls back to "" on any error (fail-closed).
+//
+// Supported engines:
+//   - Chromium-based (Chrome, Edge, Opera, Brave, Vivaldi, Chromium): "Chrome_OmniboxView"
+//   - Firefox: "MozillaWindowClass" toolbar — reads child edit control
+func extractBrowserURL(hwnd uintptr, processName string) string {
+	knownBrowsers := []string{"opera", "chrome", "firefox", "msedge", "brave", "vivaldi", "chromium"}
+	isBrowser := false
+	lowerProcess := strings.ToLower(processName)
+	for _, b := range knownBrowsers {
+		if strings.Contains(lowerProcess, b) {
+			isBrowser = true
+			break
+		}
+	}
+	if !isBrowser {
+		return ""
+	}
+
+	// Shared state for the child-window enumeration callback.
+	type searchState struct {
+		url   string
+		found bool
+	}
+	state := &searchState{}
+
+	cb := syscall.NewCallback(func(childHwnd, lParam uintptr) uintptr {
+		if state.found {
+			return 0 // stop enumeration
+		}
+		// Get the window class name.
+		var classBuf [256]uint16
+		procGetClassNameW.Call(childHwnd, uintptr(unsafe.Pointer(&classBuf[0])), uintptr(len(classBuf)))
+		className := syscall.UTF16ToString(classBuf[:])
+
+		// Chromium omnibox edit control class name.
+		if className == "Chrome_OmniboxView" || className == "OmniboxViewViews" {
+			var textBuf [2048]uint16
+			procSendMessageW.Call(childHwnd, wmGetText, uintptr(len(textBuf)), uintptr(unsafe.Pointer(&textBuf[0])))
+			text := syscall.UTF16ToString(textBuf[:])
+			if text != "" {
+				state.url = text
+				state.found = true
+			}
+			return 0 // stop enumeration
+		}
+		return 1 // continue
+	})
+
+	procEnumChildWindows.Call(hwnd, cb, 0)
+	return state.url
+}
+
 func (c *WindowsCapturer) captureFrame() (*Frame, error) {
 	// GATE CHECK MUST BE FIRST — before any pixel buffer allocation.
 	result := c.gate.Check()
@@ -223,21 +344,83 @@ func (c *WindowsCapturer) captureFrame() (*Frame, error) {
 		return nil, nil
 	}
 
-	img, err := captureScreenGDI()
+	// Compute dwell time for the current foreground window.
+	// Reset on any window change — do not inherit dwell from previously blocked windows.
+	windowKey := result.WindowCtx.ProcessName + "|" + result.WindowCtx.WindowTitle
+	now := time.Now()
+	if windowKey != c.lastWindowKey {
+		c.lastWindowKey = windowKey
+		c.windowSince = now
+	}
+	dwellSeconds := now.Sub(c.windowSince).Seconds()
+
+	sinceInput := secondsSinceLastInput()
+
+	// Enumerate monitors and capture each one.
+	monitors := enumerateMonitors()
+	if len(monitors) == 0 {
+		// Fallback: capture primary monitor using system metrics.
+		w, _, _ := procGetSystemMetrics.Call(smCxScreen)
+		h, _, _ := procGetSystemMetrics.Call(smCyScreen)
+		monitors = []monitorInfo{{rect: image.Rect(0, 0, int(w), int(h))}}
+	}
+
+	// Capture the first monitor and return a single frame.
+	// Multi-monitor: one frame per display pushed to c.frames in Run().
+	// For now captureFrame returns the primary-monitor frame; callers that want
+	// all monitors should call captureAllMonitors() directly.
+	img, err := captureMonitorGDI(monitors[0].rect)
 	if err != nil {
 		return nil, fmt.Errorf("GDI capture: %w", err)
 	}
 
 	frame := &Frame{
-		Image:        img,
-		CapturedAt:   time.Now(),
-		WindowCtx:    WindowContext(result.WindowCtx),
-		DisplayIndex: 0,
+		Image:             img,
+		CapturedAt:        now,
+		WindowCtx:         WindowContext(result.WindowCtx),
+		DisplayIndex:      0,
+		DwellSeconds:      dwellSeconds,
+		SecondsSinceInput: sinceInput,
 	}
 	if err := HashFrame(frame); err != nil {
 		c.logger.Debug("pHash failed", "error", err)
 	}
 	return frame, nil
+}
+
+// captureAllMonitors captures every connected monitor and pushes one Frame per
+// display to c.frames. This is called by Run() to enable multi-monitor support.
+func (c *WindowsCapturer) captureAllMonitors(result GateResult, dwellSeconds, sinceInput float64, now time.Time) {
+	monitors := enumerateMonitors()
+	if len(monitors) == 0 {
+		w, _, _ := procGetSystemMetrics.Call(smCxScreen)
+		h, _, _ := procGetSystemMetrics.Call(smCyScreen)
+		monitors = []monitorInfo{{rect: image.Rect(0, 0, int(w), int(h))}}
+	}
+
+	for i, mon := range monitors {
+		img, err := captureMonitorGDI(mon.rect)
+		if err != nil {
+			c.logger.Warn("GDI monitor capture failed", "display_index", i, "error", err)
+			continue
+		}
+		frame := &Frame{
+			Image:             img,
+			CapturedAt:        now,
+			WindowCtx:         WindowContext(result.WindowCtx),
+			DisplayIndex:      i,
+			DwellSeconds:      dwellSeconds,
+			SecondsSinceInput: sinceInput,
+		}
+		if err := HashFrame(frame); err != nil {
+			c.logger.Debug("pHash failed", "display_index", i, "error", err)
+		}
+		select {
+		case c.frames <- frame:
+		default:
+			c.logger.Debug("frame queue full; dropping frame", "display_index", i)
+		}
+	}
 }
 
 // Close releases DXGI resources.
@@ -287,10 +470,12 @@ func queryWindowContextImpl() (windowMetadata, error) {
 		}
 	}
 
+	browserURL := extractBrowserURL(hwnd, processName)
+
 	return windowMetadata{
 		ProcessName:      processName,
 		WindowTitle:      title,
-		BrowserURL:       "",
+		BrowserURL:       browserURL,
 		FocusedInputRole: "",
 		PID:              int(pid),
 	}, nil

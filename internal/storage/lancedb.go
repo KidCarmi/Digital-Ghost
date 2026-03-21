@@ -119,11 +119,11 @@ func (s *Store) Write(ctx context.Context, node *MemoryNode) error {
 		return fmt.Errorf("writing node %x to LanceDB: %w", node.ID, err)
 	}
 
-	s.logger.Debug("stored memory node",
+	// Tags not logged at INFO — they reflect screen content semantics (see threat model I2).
+	s.logger.Info("stored memory node",
 		"node_id", fmt.Sprintf("%x", node.ID),
 		"process", node.ProcessName,
-		"tags", node.Tags,
-		"engagement", node.EngagementScore)
+		"engagement", fmt.Sprintf("%.2f", node.EngagementScore))
 
 	return nil
 }

@@ -33,6 +33,12 @@ type Frame struct {
 
 	// DisplayIndex identifies which display this frame came from (0-indexed).
 	DisplayIndex int
+
+	// DwellSeconds is how long the foreground window was active before this frame was captured.
+	DwellSeconds float64
+
+	// SecondsSinceInput is seconds since the last keyboard/mouse event (from GetLastInputInfo).
+	SecondsSinceInput float64
 }
 
 // WindowContext mirrors filter.WindowContext but is defined here to avoid
