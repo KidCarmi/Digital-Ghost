@@ -84,11 +84,19 @@ const (
 // -- UI Automation property/scope constants ----------------------------------
 
 const (
-	uiaAutomationIdPropertyId = 10011 // UIA_AutomationIdPropertyId
-	uiaValueValuePropertyId   = 30045 // UIA_ValueValuePropertyId
-	treeScopeDescendants      = 4     // TreeScope_Descendants
-	vtBSTR                    = 8     // VARIANT vt: BSTR
+	uiaAutomationIdPropertyId    = 10011 // UIA_AutomationIdPropertyId
+	uiaValueValuePropertyId      = 30045 // UIA_ValueValuePropertyId
+	uiaBoundingRectanglePropertyId = 30001 // UIA_BoundingRectanglePropertyId (returns VT_R8 array [l,t,r,b])
+	uiaIsPasswordPropertyId      = 30003 // UIA_IsPasswordPropertyId (returns VT_BOOL)
+	treeScopeDescendants         = 4     // TreeScope_Descendants
+	vtBSTR                       = 8     // VARIANT vt: BSTR
+	vtBool                       = 11    // VARIANT vt: BOOL (Win VARIANT_BOOL: -1=true, 0=false)
+	vtR8                         = 5     // VARIANT vt: double (VT_R8)
+	vtArray                      = 0x2000 // VARIANT vt flag: SAFEARRAY
 )
+
+// IUIAutomation additional slot
+const uiaSlotGetFocusedElement = 8 // IUIAutomation::GetFocusedElement
 
 // -- COM procedure stubs -----------------------------------------------------
 
@@ -169,6 +177,101 @@ func queryBrowserURLViaUIA(hwnd uintptr) string {
 		}
 	}
 	return ""
+}
+
+// queryFocusedPasswordRect checks whether the currently focused UI element is
+// a password input field and, if so, returns its bounding rectangle in screen
+// coordinates. Returns (zero rect, false) when no password field is focused.
+//
+// Called from captureFrame() — if it returns true, the caller blacks out the
+// returned rectangle in the captured image before the frame enters the queue.
+//
+// Implementation:
+//  1. CoInitialize + CoCreateInstance(CLSID_CUIAutomation)
+//  2. IUIAutomation.GetFocusedElement(&pFocused)
+//  3. IUIAutomationElement.GetCurrentPropertyValue(UIA_IsPasswordPropertyId)
+//  4. If VARIANT_BOOL(-1) == true:
+//     IUIAutomationElement.GetCurrentPropertyValue(UIA_BoundingRectanglePropertyId)
+//     → VT_ARRAY|VT_R8 safearray with [left, top, width, height]
+func queryFocusedPasswordRect() (rect [4]float64, isPassword bool) {
+	hr, _, _ := procCoInitializeEx.Call(0, 0x0)
+	if hr != 0 && hr != 1 {
+		return rect, false
+	}
+	if hr == 0 {
+		defer procCoUninitialize.Call()
+	}
+
+	var pUIA uintptr
+	hr, _, _ = procCoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&clsidCUIAutomation)),
+		0, 0x1,
+		uintptr(unsafe.Pointer(&iidIUIAutomation)),
+		uintptr(unsafe.Pointer(&pUIA)),
+	)
+	if hr != 0 || pUIA == 0 {
+		return rect, false
+	}
+	defer uiaRelease(pUIA)
+
+	// GetFocusedElement(&pFocused) — slot 8
+	var pFocused uintptr
+	hr, _, _ = syscall.SyscallN(
+		uiaVtblSlot(pUIA, uiaSlotGetFocusedElement),
+		pUIA,
+		uintptr(unsafe.Pointer(&pFocused)),
+	)
+	if hr != 0 || pFocused == 0 {
+		return rect, false
+	}
+	defer uiaRelease(pFocused)
+
+	// GetCurrentPropertyValue(UIA_IsPasswordPropertyId, &val)
+	var val comVariant
+	hr, _, _ = syscall.SyscallN(
+		uiaVtblSlot(pFocused, uiaElemSlotGetCurrentPropVal),
+		pFocused,
+		uiaIsPasswordPropertyId,
+		uintptr(unsafe.Pointer(&val)),
+	)
+	if hr != 0 {
+		return rect, false
+	}
+	defer procVariantClear.Call(uintptr(unsafe.Pointer(&val)))
+
+	// VT_BOOL: data holds a Win VARIANT_BOOL (-1 = true, 0 = false).
+	if val.vt != vtBool || int16(val.data) != -1 {
+		return rect, false
+	}
+
+	// Element is a password field — read its bounding rectangle.
+	// UIA_BoundingRectanglePropertyId returns VT_ARRAY|VT_R8 with 4 doubles:
+	// [left, top, width, height] in screen coordinates.
+	var rectVal comVariant
+	hr, _, _ = syscall.SyscallN(
+		uiaVtblSlot(pFocused, uiaElemSlotGetCurrentPropVal),
+		pFocused,
+		uiaBoundingRectanglePropertyId,
+		uintptr(unsafe.Pointer(&rectVal)),
+	)
+	if hr != 0 {
+		return rect, true // password but no rect — still mask conservatively
+	}
+	defer procVariantClear.Call(uintptr(unsafe.Pointer(&rectVal)))
+
+	// The SAFEARRAY is a pointer in rectVal.data. Extract the 4 doubles.
+	// SAFEARRAY layout: header (32 bytes on x64), then data pointer at offset 24.
+	// Simpler: the data pointer is SAFEARRAY.pvData — offset 24 on Win64.
+	if rectVal.vt == vtArray|vtR8 && rectVal.data != 0 {
+		pvData := *(*uintptr)(unsafe.Pointer(rectVal.data + 24))
+		if pvData != 0 {
+			rect[0] = *(*float64)(unsafe.Pointer(pvData + 0))  // left
+			rect[1] = *(*float64)(unsafe.Pointer(pvData + 8))  // top
+			rect[2] = *(*float64)(unsafe.Pointer(pvData + 16)) // width
+			rect[3] = *(*float64)(unsafe.Pointer(pvData + 24)) // height
+		}
+	}
+	return rect, true
 }
 
 // uiaFindValueByAutoID searches pRoot's descendants for an element whose

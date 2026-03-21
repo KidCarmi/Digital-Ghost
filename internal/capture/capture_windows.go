@@ -153,7 +153,10 @@ func enumChildWindowProc(childHwnd, lParam uintptr) uintptr {
 	return 1 // continue
 }
 
-// WindowsCapturer captures frames using GDI BitBlt or DXGI Desktop Duplication.
+// WindowsCapturer is the top-level Windows capture coordinator.
+// It owns the privacy gate, the output channel, and the DXGI session (if any).
+// Per-monitor state (GDI handles, pHash history) lives in monitorLoop instances
+// created by Run().
 type WindowsCapturer struct {
 	cfg           *config.Config
 	gate          *Gate
@@ -186,35 +189,86 @@ func NewWindowsCapturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, lo
 	return c, nil
 }
 
-// Run starts the capture loop. Blocks until stopCh is closed.
+// Run starts one capture goroutine per connected monitor. Blocks until stopCh
+// is closed and all per-monitor goroutines have exited.
 func (c *WindowsCapturer) Run(stopCh <-chan struct{}) error {
 	backend := "GDI"
 	if c.dxgi != nil {
 		backend = "DXGI"
 	}
-	c.logger.Info("Windows capture loop started", "backend", backend)
+
+	monitors := enumerateMonitors()
+	if len(monitors) == 0 {
+		w, _, _ := procGetSystemMetrics.Call(smCxScreen)
+		h, _, _ := procGetSystemMetrics.Call(smCyScreen)
+		monitors = []monitorInfo{{rect: image.Rect(0, 0, int(w), int(h))}}
+	}
+
+	c.logger.Info("Windows capture started",
+		"backend", backend,
+		"monitors", len(monitors))
+
+	done := make(chan struct{})
+	for i, mon := range monitors {
+		ml := &monitorLoop{
+			parent:     c,
+			mon:        mon,
+			displayIdx: i,
+		}
+		go func() {
+			defer func() { done <- struct{}{} }()
+			ml.run(stopCh)
+		}()
+	}
+
+	for range monitors {
+		<-done
+	}
+	c.logger.Info("Windows capture stopped", "backend", backend)
+	return nil
+}
+
+// monitorLoop owns the per-monitor capture state: GDI handles, pHash memory,
+// and display index. One instance is created per connected monitor in Run().
+type monitorLoop struct {
+	parent     *WindowsCapturer
+	mon        monitorInfo
+	displayIdx int
+
+	// Per-monitor GDI handle cache.
+	screenDC uintptr
+	memDC    uintptr
+	bitmap   uintptr
+	cachedW  int
+	cachedH  int
+
+	prevFrame *Frame
+}
+
+// run is the per-monitor capture ticker loop. Blocks until stopCh is closed.
+func (ml *monitorLoop) run(stopCh <-chan struct{}) {
+	c := ml.parent
 	ticker := time.NewTicker(frameDuration(c.cfg.Capture.FPS))
 	defer ticker.Stop()
-
-	var prevFrame *Frame
+	defer ml.releaseHandles()
 
 	for {
 		select {
 		case <-stopCh:
-			c.logger.Info("Windows capture loop stopped", "backend", backend)
-			return nil
+			return
 		case <-ticker.C:
-			frame, err := c.captureFrame()
+			frame, err := ml.captureFrame()
 			if err != nil {
-				c.logger.Warn("GDI frame capture failed", "error", err)
+				c.logger.Warn("frame capture failed",
+					"display", ml.displayIdx, "error", err)
 				continue
 			}
 			if frame == nil {
-				continue // Blocked by privacy gate.
+				continue // gate blocked or DXGI timeout
 			}
 
-			if prevFrame != nil {
-				dup, err := IsDuplicate(frame, prevFrame, c.cfg.Capture.HashThreshold)
+			if ml.prevFrame != nil {
+				dup, err := IsDuplicate(frame, ml.prevFrame, c.cfg.Capture.HashThreshold)
 				if err == nil && dup {
 					continue
 				}
@@ -222,12 +276,151 @@ func (c *WindowsCapturer) Run(stopCh <-chan struct{}) error {
 
 			select {
 			case c.frames <- frame:
-				prevFrame = frame
+				ml.prevFrame = frame
 			default:
-				c.logger.Debug("frame queue full; dropping frame")
+				c.logger.Debug("frame queue full; dropping frame",
+					"display", ml.displayIdx)
 			}
 		}
 	}
+}
+
+// captureFrame runs a single capture tick for this monitor.
+// Gate check happens here — if blocked, returns (nil, nil).
+func (ml *monitorLoop) captureFrame() (*Frame, error) {
+	c := ml.parent
+
+	// Privacy gate is global: checks foreground window across all displays.
+	result := c.gate.Check()
+	if result.Blocked {
+		c.logger.Debug("BLOCKED", "reason", result.Reason, "display", ml.displayIdx)
+		return nil, nil
+	}
+
+	// Dwell tracking per monitor (each display has independent window history).
+	windowKey := result.WindowCtx.ProcessName + "|" + result.WindowCtx.WindowTitle
+	now := time.Now()
+	if windowKey != c.lastWindowKey {
+		c.lastWindowKey = windowKey
+		c.windowSince = now
+	}
+	dwellSeconds := now.Sub(c.windowSince).Seconds()
+	sinceInput := secondsSinceLastInput()
+
+	// Pixel capture — prefer DXGI on the primary display (index 0).
+	var img *image.RGBA
+	var err error
+	if ml.displayIdx == 0 && c.dxgi != nil {
+		img, err = c.dxgi.captureFrame()
+		if err != nil {
+			c.logger.Warn("DXGI failed; falling back to GDI",
+				"display", ml.displayIdx, "error", err)
+		}
+	}
+	if img == nil {
+		img, err = ml.captureGDI()
+		if err != nil {
+			return nil, fmt.Errorf("GDI capture display %d: %w", ml.displayIdx, err)
+		}
+	}
+
+	// Sensitive-input masking: black out focused password field before queuing.
+	if pwRect, isPassword := queryFocusedPasswordRect(); isPassword {
+		maskRect(img, pwRect)
+		c.logger.Debug("password field masked", "display", ml.displayIdx)
+	}
+
+	frame := &Frame{
+		Image:             img,
+		CapturedAt:        now,
+		WindowCtx:         WindowContext(result.WindowCtx),
+		DisplayIndex:      ml.displayIdx,
+		DwellSeconds:      dwellSeconds,
+		SecondsSinceInput: sinceInput,
+	}
+	if err := HashFrame(frame); err != nil {
+		c.logger.Debug("pHash failed", "display", ml.displayIdx, "error", err)
+	}
+	return frame, nil
+}
+
+// captureGDI captures this monitor's pixels, using cached GDI handles.
+func (ml *monitorLoop) captureGDI() (*image.RGBA, error) {
+	width := ml.mon.rect.Dx()
+	height := ml.mon.rect.Dy()
+	if width == 0 || height == 0 {
+		return nil, fmt.Errorf("monitor %d has zero dimensions", ml.displayIdx)
+	}
+
+	if width != ml.cachedW || height != ml.cachedH {
+		ml.releaseHandles()
+
+		display, err := syscall.UTF16PtrFromString("DISPLAY")
+		if err != nil {
+			return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
+		}
+		hScreen, _, _ := procCreateDC.Call(uintptr(unsafe.Pointer(display)), 0, 0, 0)
+		if hScreen == 0 {
+			return nil, fmt.Errorf("CreateDC failed")
+		}
+		hMem, _, _ := procCreateCompatibleDC.Call(hScreen)
+		if hMem == 0 {
+			procDeleteDC.Call(hScreen)
+			return nil, fmt.Errorf("CreateCompatibleDC failed")
+		}
+		hBmp, _, _ := procCreateCompatibleBitmap.Call(hScreen, uintptr(width), uintptr(height))
+		if hBmp == 0 {
+			procDeleteDC.Call(hMem)
+			procDeleteDC.Call(hScreen)
+			return nil, fmt.Errorf("CreateCompatibleBitmap failed")
+		}
+		procSelectObject.Call(hMem, hBmp)
+		ml.screenDC, ml.memDC, ml.bitmap = hScreen, hMem, hBmp
+		ml.cachedW, ml.cachedH = width, height
+	}
+
+	ret, _, _ := procBitBlt.Call(
+		ml.memDC, 0, 0, uintptr(width), uintptr(height),
+		ml.screenDC, uintptr(ml.mon.rect.Min.X), uintptr(ml.mon.rect.Min.Y),
+		srccopy,
+	)
+	if ret == 0 {
+		ml.releaseHandles()
+		return nil, fmt.Errorf("BitBlt failed")
+	}
+
+	bmi := bitmapInfoHeader{
+		biSize: 40, biWidth: int32(width), biHeight: -int32(height),
+		biPlanes: 1, biBitCount: 32,
+	}
+	pixels := make([]byte, width*height*4)
+	ret, _, _ = procGetDIBits.Call(
+		ml.screenDC, ml.bitmap, 0, uintptr(height),
+		uintptr(unsafe.Pointer(&pixels[0])),
+		uintptr(unsafe.Pointer(&bmi)),
+		dibRGBColors,
+	)
+	if ret == 0 {
+		ml.releaseHandles()
+		return nil, fmt.Errorf("GetDIBits failed")
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for i := 0; i < width*height; i++ {
+		img.Pix[i*4+0] = pixels[i*4+2]
+		img.Pix[i*4+1] = pixels[i*4+1]
+		img.Pix[i*4+2] = pixels[i*4+0]
+		img.Pix[i*4+3] = 0xFF
+	}
+	return img, nil
+}
+
+// releaseHandles frees the per-monitor GDI objects.
+func (ml *monitorLoop) releaseHandles() {
+	if ml.bitmap != 0 { procDeleteObject.Call(ml.bitmap); ml.bitmap = 0 }
+	if ml.memDC != 0 { procDeleteDC.Call(ml.memDC); ml.memDC = 0 }
+	if ml.screenDC != 0 { procDeleteDC.Call(ml.screenDC); ml.screenDC = 0 }
+	ml.cachedW, ml.cachedH = 0, 0
 }
 
 // secondsSinceLastInput returns how many seconds have elapsed since the last
@@ -253,84 +446,6 @@ func enumerateMonitors() []monitorInfo {
 	return monitors
 }
 
-// captureMonitorGDI captures a single monitor's pixels using GDI BitBlt.
-// rect is the monitor's position in virtual-screen coordinates.
-// Returns an *image.RGBA in top-down order with RGBA byte layout.
-func captureMonitorGDI(rect image.Rectangle) (*image.RGBA, error) {
-	width := rect.Dx()
-	height := rect.Dy()
-	if width == 0 || height == 0 {
-		return nil, fmt.Errorf("monitor has zero dimensions")
-	}
-
-	display, err := syscall.UTF16PtrFromString("DISPLAY")
-	if err != nil {
-		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
-	}
-
-	hScreenDC, _, _ := procCreateDC.Call(uintptr(unsafe.Pointer(display)), 0, 0, 0)
-	if hScreenDC == 0 {
-		return nil, fmt.Errorf("CreateDC(DISPLAY) failed")
-	}
-	defer procDeleteDC.Call(hScreenDC)
-
-	hMemDC, _, _ := procCreateCompatibleDC.Call(hScreenDC)
-	if hMemDC == 0 {
-		return nil, fmt.Errorf("CreateCompatibleDC failed")
-	}
-	defer procDeleteDC.Call(hMemDC)
-
-	hBitmap, _, _ := procCreateCompatibleBitmap.Call(hScreenDC, uintptr(width), uintptr(height))
-	if hBitmap == 0 {
-		return nil, fmt.Errorf("CreateCompatibleBitmap failed")
-	}
-	defer procDeleteObject.Call(hBitmap)
-
-	procSelectObject.Call(hMemDC, hBitmap)
-
-	// BitBlt from the monitor's virtual-screen origin.
-	ret, _, _ := procBitBlt.Call(
-		hMemDC, 0, 0, uintptr(width), uintptr(height),
-		hScreenDC, uintptr(rect.Min.X), uintptr(rect.Min.Y),
-		srccopy,
-	)
-	if ret == 0 {
-		return nil, fmt.Errorf("BitBlt failed")
-	}
-
-	// GetDIBits extracts raw pixel bytes. biHeight < 0 = top-down DIB.
-	bmi := bitmapInfoHeader{
-		biSize:     40, // sizeof(BITMAPINFOHEADER)
-		biWidth:    int32(width),
-		biHeight:   -int32(height),
-		biPlanes:   1,
-		biBitCount: 32,
-		// biCompression = 0 = BI_RGB
-	}
-	pixels := make([]byte, width*height*4)
-	ret, _, _ = procGetDIBits.Call(
-		hScreenDC,
-		hBitmap,
-		0,
-		uintptr(height),
-		uintptr(unsafe.Pointer(&pixels[0])),
-		uintptr(unsafe.Pointer(&bmi)),
-		dibRGBColors,
-	)
-	if ret == 0 {
-		return nil, fmt.Errorf("GetDIBits failed")
-	}
-
-	// GDI returns pixels in BGRA order; image.RGBA expects RGBA.
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for i := 0; i < width*height; i++ {
-		img.Pix[i*4+0] = pixels[i*4+2] // R ← B
-		img.Pix[i*4+1] = pixels[i*4+1] // G ← G
-		img.Pix[i*4+2] = pixels[i*4+0] // B ← R
-		img.Pix[i*4+3] = 0xFF
-	}
-	return img, nil
-}
 
 // extractBrowserURL attempts to read the current URL from a browser's address bar
 // using EnumChildWindows to find the Chromium omnibox edit control, then
@@ -367,110 +482,24 @@ func extractBrowserURL(hwnd uintptr, processName string) string {
 	return queryBrowserURLViaUIA(hwnd)
 }
 
-func (c *WindowsCapturer) captureFrame() (*Frame, error) {
-	// GATE CHECK MUST BE FIRST — before any pixel buffer allocation.
-	result := c.gate.Check()
-	if result.Blocked {
-		c.logger.Debug("BLOCKED", "reason", result.Reason)
-		return nil, nil
-	}
 
-	// Compute dwell time for the current foreground window.
-	// Reset on any window change — do not inherit dwell from previously blocked windows.
-	windowKey := result.WindowCtx.ProcessName + "|" + result.WindowCtx.WindowTitle
-	now := time.Now()
-	if windowKey != c.lastWindowKey {
-		c.lastWindowKey = windowKey
-		c.windowSince = now
+// maskRect blacks out a rectangular region of img described by [left, top, width, height]
+// in screen coordinates. Clamps to image bounds.
+func maskRect(img *image.RGBA, r [4]float64) {
+	if img == nil {
+		return
 	}
-	dwellSeconds := now.Sub(c.windowSince).Seconds()
-
-	sinceInput := secondsSinceLastInput()
-
-	// Capture pixels — prefer DXGI if the session is active.
-	var img *image.RGBA
-	var err error
-	if c.dxgi != nil {
-		img, err = c.dxgi.captureFrame()
-		if err != nil {
-			c.logger.Warn("DXGI frame capture failed; falling back to GDI", "error", err)
-			// Fall through to GDI.
-		}
-	}
-
-	if img == nil && err == nil {
-		// Either DXGI returned no-new-frame (timeout) or DXGI isn't configured.
-		// For the timeout case we still want to capture via GDI so the rest of
-		// the pipeline (dwell, engagement) advances normally.
-		monitors := enumerateMonitors()
-		if len(monitors) == 0 {
-			w, _, _ := procGetSystemMetrics.Call(smCxScreen)
-			h, _, _ := procGetSystemMetrics.Call(smCyScreen)
-			monitors = []monitorInfo{{rect: image.Rect(0, 0, int(w), int(h))}}
-		}
-		img, err = captureMonitorGDI(monitors[0].rect)
-		if err != nil {
-			return nil, fmt.Errorf("GDI capture: %w", err)
-		}
-	} else if err != nil {
-		// DXGI returned a real error; try GDI as a last resort.
-		monitors := enumerateMonitors()
-		if len(monitors) == 0 {
-			w, _, _ := procGetSystemMetrics.Call(smCxScreen)
-			h, _, _ := procGetSystemMetrics.Call(smCyScreen)
-			monitors = []monitorInfo{{rect: image.Rect(0, 0, int(w), int(h))}}
-		}
-		img, err = captureMonitorGDI(monitors[0].rect)
-		if err != nil {
-			return nil, fmt.Errorf("GDI capture (after DXGI failure): %w", err)
-		}
-	}
-
-	frame := &Frame{
-		Image:             img,
-		CapturedAt:        now,
-		WindowCtx:         WindowContext(result.WindowCtx),
-		DisplayIndex:      0,
-		DwellSeconds:      dwellSeconds,
-		SecondsSinceInput: sinceInput,
-	}
-	if err := HashFrame(frame); err != nil {
-		c.logger.Debug("pHash failed", "error", err)
-	}
-	return frame, nil
-}
-
-// captureAllMonitors captures every connected monitor and pushes one Frame per
-// display to c.frames. This is called by Run() to enable multi-monitor support.
-func (c *WindowsCapturer) captureAllMonitors(result GateResult, dwellSeconds, sinceInput float64, now time.Time) {
-	monitors := enumerateMonitors()
-	if len(monitors) == 0 {
-		w, _, _ := procGetSystemMetrics.Call(smCxScreen)
-		h, _, _ := procGetSystemMetrics.Call(smCyScreen)
-		monitors = []monitorInfo{{rect: image.Rect(0, 0, int(w), int(h))}}
-	}
-
-	for i, mon := range monitors {
-		img, err := captureMonitorGDI(mon.rect)
-		if err != nil {
-			c.logger.Warn("GDI monitor capture failed", "display_index", i, "error", err)
-			continue
-		}
-		frame := &Frame{
-			Image:             img,
-			CapturedAt:        now,
-			WindowCtx:         WindowContext(result.WindowCtx),
-			DisplayIndex:      i,
-			DwellSeconds:      dwellSeconds,
-			SecondsSinceInput: sinceInput,
-		}
-		if err := HashFrame(frame); err != nil {
-			c.logger.Debug("pHash failed", "display_index", i, "error", err)
-		}
-		select {
-		case c.frames <- frame:
-		default:
-			c.logger.Debug("frame queue full; dropping frame", "display_index", i)
+	x0, y0 := int(r[0]), int(r[1])
+	x1, y1 := x0+int(r[2]), y0+int(r[3])
+	b := img.Bounds()
+	if x0 < b.Min.X { x0 = b.Min.X }
+	if y0 < b.Min.Y { y0 = b.Min.Y }
+	if x1 > b.Max.X { x1 = b.Max.X }
+	if y1 > b.Max.Y { y1 = b.Max.Y }
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			i := img.PixOffset(x, y)
+			img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = 0, 0, 0, 0xFF
 		}
 	}
 }
