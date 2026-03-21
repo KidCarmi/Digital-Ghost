@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -64,7 +65,8 @@ func run() error {
 			"property in this system meaningless. Exiting.")
 	}
 
-	// ── Logging ───────────────────────────────────────────────────────────────
+	// ── Bootstrap logger (before config load) ────────────────────────────────
+	// Replaced below once config is loaded and the log file path is known.
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
@@ -80,6 +82,26 @@ func run() error {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// ── Logging (re-initialise from config) ───────────────────────────────────
+	{
+		level := slog.LevelInfo
+		if cfg.Logging.Level == "debug" {
+			level = slog.LevelDebug
+		}
+		var logWriter io.Writer = os.Stdout
+		if cfg.Logging.File != "" {
+			if err := os.MkdirAll(filepath.Dir(cfg.Logging.File), 0700); err == nil {
+				if f, err := os.OpenFile(cfg.Logging.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+					logWriter = io.MultiWriter(os.Stdout, f)
+					// f is intentionally not closed here — it lives for the daemon lifetime.
+					// The OS closes it on process exit.
+				}
+			}
+		}
+		logger = slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: level}))
+		slog.SetDefault(logger)
 	}
 
 	// Create data directory.
@@ -331,6 +353,17 @@ func runInferenceLoop(
 			continue
 		}
 
+		// Hard dwell threshold — skip frames where the window was active for less
+		// than MinDwellSeconds. This avoids spending GPU time on transient glances
+		// (e.g. alt-tab flashes) before engagement scoring runs.
+		if frame.DwellSeconds < cfg.SemanticFilter.MinDwellSeconds {
+			cancel()
+			logger.Debug("frame skipped: insufficient dwell",
+				"dwell_sec", frame.DwellSeconds,
+				"min", cfg.SemanticFilter.MinDwellSeconds)
+			continue
+		}
+
 		// Run inference.
 		result, err := client.Infer(ctx, frame)
 		cancel()
@@ -340,11 +373,15 @@ func runInferenceLoop(
 		}
 
 		// Compute engagement score.
+		// TypedWithinSeconds uses the single available input timestamp.
+		// ScrolledWithinSeconds and ClickedWithinSeconds are left 0 because
+		// GetLastInputInfo does not distinguish event types — using the same value
+		// for all three would create phantom signals and inflate the score.
 		signals := filter.EngagementSignals{
 			DwellSeconds:          frame.DwellSeconds,
 			TypedWithinSeconds:    frame.SecondsSinceInput,
-			ScrolledWithinSeconds: frame.SecondsSinceInput,
-			ClickedWithinSeconds:  frame.SecondsSinceInput,
+			ScrolledWithinSeconds: 0,
+			ClickedWithinSeconds:  0,
 			ContentClass: filter.Classify(filter.ClassifierInput{
 				ProcessName: frame.WindowCtx.ProcessName,
 				WindowTitle: frame.WindowCtx.WindowTitle,
@@ -361,8 +398,25 @@ func runInferenceLoop(
 		}
 
 		// Compute embedding for semantic search and coherence check.
+		// Enrich the embed text with window metadata so that searches for
+		// app names, window titles, and URLs match stored nodes even when the
+		// VLM description doesn't explicitly repeat that information.
+		embedText := result.Description
+		if frame.WindowCtx.ProcessName != "" {
+			embedText += "\nApp: " + frame.WindowCtx.ProcessName
+		}
+		if frame.WindowCtx.WindowTitle != "" {
+			embedText += "\nWindow: " + frame.WindowCtx.WindowTitle
+		}
+		if frame.WindowCtx.BrowserURL != "" {
+			embedText += "\nURL: " + frame.WindowCtx.BrowserURL
+		}
+		if len(result.Tags) > 0 {
+			embedText += "\nTags: " + strings.Join(result.Tags, ", ")
+		}
+
 		embedCtx, embedCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Inference.TimeoutSec)*time.Second)
-		embedding, embedErr := client.Embed(embedCtx, result.Description)
+		embedding, embedErr := client.Embed(embedCtx, embedText)
 		embedCancel()
 		if embedErr != nil {
 			logger.Debug("embedding failed (non-fatal); storing without vector", "error", embedErr)

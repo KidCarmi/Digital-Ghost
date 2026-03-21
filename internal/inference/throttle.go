@@ -81,23 +81,27 @@ func (g *Governor) Acquire(ctx context.Context) error {
 		if cpu > int64(g.cfg.CPUIdleThreshold) {
 			g.logger.Debug("governor waiting: CPU above threshold",
 				"cpu_pct", cpu, "threshold", g.cfg.CPUIdleThreshold)
+			t := time.NewTimer(5 * time.Second)
 			select {
 			case <-ctx.Done():
+				t.Stop()
 				return ctx.Err()
-			case <-time.After(5 * time.Second):
-				continue
+			case <-t.C:
 			}
+			continue
 		}
 
 		if gpu > int64(g.cfg.GPUIdleThreshold) {
 			g.logger.Debug("governor waiting: GPU above threshold",
 				"gpu_pct", gpu, "threshold", g.cfg.GPUIdleThreshold)
+			t := time.NewTimer(5 * time.Second)
 			select {
 			case <-ctx.Done():
+				t.Stop()
 				return ctx.Err()
-			case <-time.After(5 * time.Second):
-				continue
+			case <-t.C:
 			}
+			continue
 		}
 
 		// Try to acquire a token from the bucket (non-blocking).
@@ -109,10 +113,12 @@ func (g *Governor) Acquire(ctx context.Context) error {
 		default:
 			// Rate limit reached. Wait for next refill.
 			g.logger.Debug("governor waiting: rate limit reached")
+			t := time.NewTimer(2 * time.Second)
 			select {
 			case <-ctx.Done():
+				t.Stop()
 				return ctx.Err()
-			case <-time.After(2 * time.Second):
+			case <-t.C:
 				// Re-check on next iteration.
 			}
 		}

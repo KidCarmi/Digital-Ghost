@@ -248,17 +248,43 @@ type monitorLoop struct {
 }
 
 // run is the per-monitor capture ticker loop. Blocks until stopCh is closed.
+// Automatically switches to IdleFPS when no keyboard/mouse input has been
+// detected for IdleThresholdSec seconds, saving GPU/CPU during idle periods.
 func (ml *monitorLoop) run(stopCh <-chan struct{}) {
 	c := ml.parent
 	ticker := time.NewTicker(frameDuration(c.cfg.Capture.FPS))
 	defer ticker.Stop()
 	defer ml.releaseHandles()
 
+	isIdle := false
+	idleThreshold := float64(c.cfg.Capture.IdleThresholdSec)
+	if idleThreshold <= 0 {
+		idleThreshold = 30
+	}
+
 	for {
 		select {
 		case <-stopCh:
 			return
 		case <-ticker.C:
+			// Switch ticker rate based on idle state (check once per tick, zero cost).
+			idle := secondsSinceLastInput() > idleThreshold
+			if idle != isIdle {
+				isIdle = idle
+				ticker.Stop()
+				if isIdle {
+					ticker = time.NewTicker(frameDuration(c.cfg.Capture.IdleFPS))
+					c.logger.Debug("capture rate reduced: system idle",
+						"display", ml.displayIdx,
+						"fps", c.cfg.Capture.IdleFPS)
+				} else {
+					ticker = time.NewTicker(frameDuration(c.cfg.Capture.FPS))
+					c.logger.Debug("capture rate restored: input detected",
+						"display", ml.displayIdx,
+						"fps", c.cfg.Capture.FPS)
+				}
+			}
+
 			frame, err := ml.captureFrame()
 			if err != nil {
 				c.logger.Warn("frame capture failed",

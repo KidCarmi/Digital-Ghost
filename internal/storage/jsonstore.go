@@ -87,14 +87,16 @@ func (s *JSONStore) ReadRecord(_ context.Context, _ string, nodeID [16]byte) ([]
 }
 
 func (s *JSONStore) NearestNeighbors(_ context.Context, _ string, query []float32, k int) ([]graph.ScoredNode, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	if len(query) == 0 {
 		return nil, nil
 	}
 
+	// Load the index under the read lock, then release before doing disk I/O.
+	// Holding RLock across thousands of os.ReadFile calls would block all
+	// concurrent writes for the full search duration (potentially 10+ seconds).
+	s.mu.RLock()
 	entries, err := s.loadIndex()
+	s.mu.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("loading index: %w", err)
 	}
@@ -113,6 +115,9 @@ func (s *JSONStore) NearestNeighbors(_ context.Context, _ string, query []float3
 		var nodeID [16]byte
 		copy(nodeID[:], idBytes)
 
+		// Read individual node files outside the lock. Each .enc file is
+		// written atomically (write to .tmp + rename), so a concurrent write
+		// either completes before we read (we see new data) or after (we skip).
 		data, err := os.ReadFile(s.nodePath(nodeID))
 		if err != nil {
 			continue
@@ -314,7 +319,10 @@ func (s *JSONStore) removeFromIndex(nodeID [16]byte) error {
 		return err
 	}
 	id := hex.EncodeToString(nodeID[:])
-	filtered := entries[:0]
+	// Use a fresh slice rather than entries[:0] to avoid aliasing: the
+	// entries[:0] idiom reuses the same backing array, so range-reads and
+	// append-writes would operate on the same memory.
+	var filtered []indexEntry
 	for _, e := range entries {
 		if e.ID != id {
 			filtered = append(filtered, e)

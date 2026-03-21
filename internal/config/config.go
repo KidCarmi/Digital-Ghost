@@ -25,10 +25,13 @@ type Config struct {
 }
 
 type CaptureConfig struct {
-	FPS           float64 `yaml:"fps"`
-	IdleFPS       float64 `yaml:"idle_fps"`
-	QueueDepth    int     `yaml:"queue_depth"`
-	HashThreshold int     `yaml:"hash_threshold"`
+	FPS              float64 `yaml:"fps"`
+	IdleFPS          float64 `yaml:"idle_fps"`
+	// IdleThresholdSec is the number of seconds without keyboard/mouse input
+	// before the capture loop switches to IdleFPS. Default: 30.
+	IdleThresholdSec int     `yaml:"idle_threshold_sec"`
+	QueueDepth       int     `yaml:"queue_depth"`
+	HashThreshold    int     `yaml:"hash_threshold"`
 	// Backend selects the screen-capture backend.
 	// "gdi"  — GDI BitBlt (default; works everywhere, higher CPU)
 	// "dxgi" — DXGI Desktop Duplication (GPU-accelerated; requires D3D11)
@@ -44,14 +47,18 @@ type ResourceBudgetConfig struct {
 }
 
 type InferenceConfig struct {
-	OllamaURL   string `yaml:"ollama_url"`
-	Model       string `yaml:"model"`
+	OllamaURL  string `yaml:"ollama_url"`
+	Model      string `yaml:"model"`
 	// EmbedModel is the Ollama model used for text embeddings.
 	// Defaults to "nomic-embed-text" which produces better semantic search
 	// results than using the VLM (llava:7b) for embeddings.
-	EmbedModel  string `yaml:"embed_model"`
-	TimeoutSec  int    `yaml:"timeout_sec"`
-	MaxRetries  int    `yaml:"max_retries"`
+	EmbedModel string `yaml:"embed_model"`
+	// ChatModel is the Ollama model used for conversational chat responses.
+	// Defaults to llava:7b (the VLM) if empty, but a pure text model like
+	// "llama3:8b" or "mistral:7b" produces significantly better chat answers.
+	ChatModel  string `yaml:"chat_model"`
+	TimeoutSec int    `yaml:"timeout_sec"`
+	MaxRetries int    `yaml:"max_retries"`
 }
 
 type SemanticFilterConfig struct {
@@ -78,11 +85,12 @@ type LoggingConfig struct {
 func Defaults() Config {
 	return Config{
 		Capture: CaptureConfig{
-			FPS:           2.0,
-			IdleFPS:       0.5,
-			QueueDepth:    100,
-			HashThreshold: 10,
-			Backend:       "gdi",
+			FPS:              2.0,
+			IdleFPS:          0.5,
+			IdleThresholdSec: 30,
+			QueueDepth:       100,
+			HashThreshold:    10,
+			Backend:          "gdi",
 		},
 		ResourceBudget: ResourceBudgetConfig{
 			MaxCPUPct:          20,

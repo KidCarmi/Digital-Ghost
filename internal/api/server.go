@@ -177,8 +177,16 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// minQuerySimilarity is the minimum cosine similarity for a result to be
+	// returned. Results below this are not meaningfully related to the query.
+	// nomic-embed-text cosine space: 0.3 is a reasonable "related" threshold.
+	const minQuerySimilarity = 0.3
+
 	var results []QueryResult
 	for _, sn := range scored {
+		if sn.Similarity < minQuerySimilarity {
+			continue // skip low-relevance noise
+		}
 		idBytes, err := hex.DecodeString(sn.NodeID)
 		if err != nil || len(idBytes) != 16 {
 			continue
@@ -241,9 +249,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	const minChatSimilarity = 0.3
+
 	var sources []QueryResult
 	var sb strings.Builder
 	for i, sn := range scored {
+		if sn.Similarity < minChatSimilarity {
+			continue
+		}
 		idBytes, err := hex.DecodeString(sn.NodeID)
 		if err != nil || len(idBytes) != 16 {
 			continue

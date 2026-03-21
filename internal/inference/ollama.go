@@ -101,6 +101,35 @@ func NewClient(cfg config.InferenceConfig, logger *slog.Logger) *Client {
 	}
 }
 
+// buildInferencePrompt constructs a context-enriched prompt for the VLM.
+// Injecting app name, window title, and URL gives the model grounding that
+// pixels alone cannot provide (e.g. which Python version, which GitHub repo,
+// which Slack channel) and produces significantly more specific descriptions.
+func buildInferencePrompt(frame *capture.Frame) string {
+	var sb strings.Builder
+	if frame.WindowCtx.ProcessName != "" || frame.WindowCtx.WindowTitle != "" || frame.WindowCtx.BrowserURL != "" {
+		sb.WriteString("Context about what's on screen:\n")
+		if frame.WindowCtx.ProcessName != "" {
+			sb.WriteString("  App: ")
+			sb.WriteString(frame.WindowCtx.ProcessName)
+			sb.WriteString("\n")
+		}
+		if frame.WindowCtx.WindowTitle != "" {
+			sb.WriteString("  Window title: ")
+			sb.WriteString(frame.WindowCtx.WindowTitle)
+			sb.WriteString("\n")
+		}
+		if frame.WindowCtx.BrowserURL != "" {
+			sb.WriteString("  URL: ")
+			sb.WriteString(frame.WindowCtx.BrowserURL)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString(inferencePrompt)
+	return sb.String()
+}
+
 // Infer sends a frame to Ollama and returns the inference result.
 // The caller is responsible for calling Governor.Acquire() before calling Infer.
 //
@@ -113,7 +142,7 @@ func (c *Client) Infer(ctx context.Context, frame *capture.Frame) (*InferenceRes
 
 	reqBody := ollamaGenerateRequest{
 		Model:  c.cfg.Model,
-		Prompt: inferencePrompt,
+		Prompt: buildInferencePrompt(frame),
 		Images: []string{imgBase64},
 		Stream: false,
 		// temperature:0 makes the model deterministic and anchors it to the
@@ -246,11 +275,21 @@ type ollamaEmbedResponse struct {
 	Embedding []float32 `json:"embedding"`
 }
 
+// chatModel returns the model to use for text-only chat generation.
+// Falls back to the VLM model if ChatModel is not configured.
+func (c *Client) chatModel() string {
+	if c.cfg.ChatModel != "" {
+		return c.cfg.ChatModel
+	}
+	return c.cfg.Model
+}
+
 // Generate calls Ollama /api/generate with a text-only prompt (no images).
 // Used for conversational summarization over retrieved memory descriptions.
+// Uses ChatModel (if configured) instead of the VLM for better text quality.
 func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	reqBody := ollamaGenerateRequest{
-		Model:  c.cfg.Model,
+		Model:  c.chatModel(),
 		Prompt: prompt,
 		Stream: false,
 	}
@@ -258,13 +297,35 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshaling request: %w", err)
 	}
-	result, err := c.doRequest(ctx, c.cfg.OllamaURL+"/api/generate", bodyBytes)
+
+	// Do the HTTP call directly rather than through doRequest, because doRequest
+	// calls parseDescriptionAndTags which would silently truncate any chat
+	// response that contains the word "tags:" (e.g. "Here are the main tags:...").
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.OllamaURL+"/api/generate", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("creating chat request: %w", err)
 	}
-	// doRequest returns description (with TAGS stripped); for a conversational
-	// response there are no tags, so result.Description is the full reply.
-	return result.Description, nil
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("chat HTTP request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("Ollama chat returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var ollamaResp ollamaGenerateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+		return "", fmt.Errorf("decoding chat response: %w", err)
+	}
+	if ollamaResp.Error != "" {
+		return "", fmt.Errorf("Ollama chat error: %s", ollamaResp.Error)
+	}
+	return strings.TrimSpace(ollamaResp.Response), nil
 }
 
 // Embed returns a vector embedding for the given text using the configured embed model.
