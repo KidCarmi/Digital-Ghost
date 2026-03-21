@@ -1,0 +1,37 @@
+# Digital Ghost — Default Configuration
+# All values can be overridden in ~/.config/digitalghost/config.yaml
+
+capture:
+  fps: 2                        # Frames per second to capture
+  idle_fps: 0.5                 # FPS when system is under load
+  queue_depth: 100              # Max frames in pipeline queue
+  hash_threshold: 10            # Hamming distance below which frame is a duplicate (skip)
+
+resource_budget:
+  max_cpu_pct: 20               # Max CPU% DG may consume (governor hard ceiling)
+  max_gpu_pct: 15               # Max GPU% for Ollama inference
+  max_inference_per_min: 6      # Rate limit: VLM calls per minute
+  cpu_idle_threshold: 40        # Only infer when system CPU < this value
+  gpu_idle_threshold: 30        # Only infer when GPU util < this value
+
+inference:
+  ollama_url: "http://127.0.0.1:11434"
+  model: "llava:7b"             # Vision-Language Model via Ollama
+  timeout_sec: 30               # Per-inference timeout
+  max_retries: 2
+
+semantic_filter:
+  min_engagement_score: 0.3     # Frames below this score are discarded
+  min_dwell_seconds: 3          # Minimum time user must view content
+  graph_coherence_threshold: 0.4 # Min cosine similarity to existing nodes
+  isolated_node_score: 0.8      # Higher bar for nodes with no graph connections
+
+storage:
+  data_dir: "~/.local/share/digitalghost"
+  retention_days: 90            # Default retention period
+  max_retention_days: 730       # Hard maximum (2 years)
+  secure_delete: true           # DoD 5220.22-M on HDD; TRIM on SSD
+
+logging:
+  level: "info"                 # debug | info | warn | error
+  file: "~/.local/share/digitalghost/dg.log"

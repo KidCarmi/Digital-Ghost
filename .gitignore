@@ -1,0 +1,31 @@
+# Build artifacts
+/bin/
+/dist/
+digitalghost
+
+# Go
+*.test
+*.out
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data — NEVER commit user data or keys
+~/.local/share/digitalghost/
+*.db
+*.lance
+consent.json
+
+# Secrets
+*.pem
+*.key
+.env
+configs/local.yaml
