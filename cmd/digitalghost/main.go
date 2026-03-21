@@ -138,7 +138,14 @@ func run() error {
 	}
 
 	// ── Step 7: Initialize components ────────────────────────────────────────
-	blocklistPath := filepath.Join(os.Getenv("HOME"), ".config/digitalghost/blocklist.yaml")
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolving home directory: %w", err)
+	}
+	blocklistPath := filepath.Join(homeDir, ".config", "digitalghost", "blocklist.yaml")
+	if err := ensureDefaultBlocklist(blocklistPath); err != nil {
+		logger.Warn("could not create default blocklist", "error", err)
+	}
 	blocklist, err := filter.NewBlocklist(blocklistPath, logger)
 	if err != nil {
 		return fmt.Errorf("initializing blocklist: %w", err)
@@ -336,6 +343,27 @@ func makeChan(q *inference.Queue) chan<- *capture.Frame {
 		}
 	}()
 	return ch
+}
+
+// ensureDefaultBlocklist copies the embedded default blocklist to path if it
+// doesn't already exist. This guarantees the file is present on first run.
+func ensureDefaultBlocklist(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil // already exists
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
+	}
+	src := filepath.Join("configs", "blocklist.yaml")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		// Not fatal: the blocklist package will use hardcoded defaults.
+		return fmt.Errorf("reading bundled blocklist %s: %w", src, err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing default blocklist: %w", err)
+	}
+	return nil
 }
 
 // stubLanceDB is a no-op implementation of storage.lanceDBConn for the architecture scaffold.
