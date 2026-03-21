@@ -265,8 +265,28 @@ func run() error {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); runCaptureLoop(cfg, gate, frameQueue, stopCh, logger) }()
-	go func() { defer wg.Done(); runInferenceLoop(cfg, governor, ollamaClient, frameQueue, coherenceChecker, store, stopCh, logger) }()
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("capture goroutine panicked — stopping daemon",
+					"panic", r)
+				stopFn() // close stopCh so the tray icon can show an error state
+			}
+		}()
+		runCaptureLoop(cfg, gate, frameQueue, stopCh, logger)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("inference goroutine panicked — stopping daemon",
+					"panic", r)
+				stopFn()
+			}
+		}()
+		runInferenceLoop(cfg, governor, ollamaClient, frameQueue, coherenceChecker, store, stopCh, logger)
+	}()
 	go retentionMgr.RunScheduled(stopCh)
 
 	// ── Step 9: Block until shutdown ─────────────────────────────────────────
@@ -476,10 +496,52 @@ func runWipe(cfg *config.Config, enc *storage.Encryptor, km *storage.KeyManager,
 
 func runStatus(cfg *config.Config, logger *slog.Logger) error {
 	fmt.Printf("Digital Ghost v%s\n", version)
-	fmt.Printf("Data directory: %s\n", cfg.Storage.DataDir)
-	fmt.Printf("Model: %s\n", cfg.Inference.Model)
-	fmt.Printf("Retention: %d days\n", cfg.Storage.RetentionDays)
-	fmt.Printf("Max CPU: %d%%  Max GPU: %d%%\n", cfg.ResourceBudget.MaxCPUPct, cfg.ResourceBudget.MaxGPUPct)
+	fmt.Printf("Data directory : %s\n", cfg.Storage.DataDir)
+	fmt.Printf("VLM model      : %s\n", cfg.Inference.Model)
+	fmt.Printf("Embed model    : %s\n", cfg.Inference.EmbedModel)
+	if cfg.Inference.ChatModel != "" {
+		fmt.Printf("Chat model     : %s\n", cfg.Inference.ChatModel)
+	}
+	fmt.Printf("Capture FPS    : %.1f (idle: %.1f after %ds)\n",
+		cfg.Capture.FPS, cfg.Capture.IdleFPS, cfg.Capture.IdleThresholdSec)
+	fmt.Printf("Retention      : %d days\n", cfg.Storage.RetentionDays)
+	fmt.Printf("Max CPU        : %d%%  Max GPU: %d%%\n", cfg.ResourceBudget.MaxCPUPct, cfg.ResourceBudget.MaxGPUPct)
+
+	// Live store stats — open the store read-only to count nodes.
+	km, err := storage.NewKeyManager()
+	if err != nil {
+		fmt.Printf("Memory nodes   : (keychain unavailable: %v)\n", err)
+		return nil
+	}
+	defer km.Close()
+	enc, err := storage.NewEncryptor(km.Key())
+	if err != nil {
+		fmt.Printf("Memory nodes   : (encryptor unavailable: %v)\n", err)
+		return nil
+	}
+	db, err := storage.NewJSONStore(cfg.Storage.DataDir, enc, logger)
+	if err != nil {
+		fmt.Printf("Memory nodes   : (store unavailable: %v)\n", err)
+		return nil
+	}
+	store := storage.NewStore(enc, db, cfg.Storage.DataDir, logger)
+	defer store.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	count, lastCapture, err := store.Stats(ctx)
+	if err != nil {
+		fmt.Printf("Memory nodes   : (stats error: %v)\n", err)
+		return nil
+	}
+	fmt.Printf("Memory nodes   : %d\n", count)
+	if !lastCapture.IsZero() {
+		fmt.Printf("Last capture   : %s (%s ago)\n",
+			lastCapture.Format("2006-01-02 15:04:05"),
+			time.Since(lastCapture).Round(time.Second))
+	} else {
+		fmt.Printf("Last capture   : none yet\n")
+	}
 	return nil
 }
 

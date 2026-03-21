@@ -28,6 +28,7 @@ import (
 	"image"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -251,6 +252,15 @@ type monitorLoop struct {
 // Automatically switches to IdleFPS when no keyboard/mouse input has been
 // detected for IdleThresholdSec seconds, saving GPU/CPU during idle periods.
 func (ml *monitorLoop) run(stopCh <-chan struct{}) {
+	// Lock this goroutine to its OS thread for the entire capture loop.
+	// COM (UIA for password detection + browser URL) and DXGI are both
+	// apartment-threaded: CoInitializeEx and DXGI COM calls must be made
+	// from the same OS thread. Without this, Go's scheduler can migrate
+	// the goroutine mid-frame, causing CoUninitialize on the wrong thread
+	// (a no-op) and leaving COM state dangling on the original thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	c := ml.parent
 	ticker := time.NewTicker(frameDuration(c.cfg.Capture.FPS))
 	defer ticker.Stop()
@@ -586,11 +596,19 @@ func queryWindowContextImpl() (windowMetadata, error) {
 
 	browserURL := extractBrowserURL(hwnd, processName)
 
+	// Check whether the focused element is a password field via UIA.
+	// When true, the privacy gate blocks the entire frame (Step 3 in privacy.go).
+	// This was always "" before, making that gate path permanently dead on Windows.
+	focusedInputRole := ""
+	if queryFocusedIsPassword() {
+		focusedInputRole = "password"
+	}
+
 	return windowMetadata{
 		ProcessName:      processName,
 		WindowTitle:      title,
 		BrowserURL:       browserURL,
-		FocusedInputRole: "",
+		FocusedInputRole: focusedInputRole,
 		PID:              int(pid),
 	}, nil
 }

@@ -53,12 +53,12 @@ func NewGovernor(cfg config.ResourceBudgetConfig, logger *slog.Logger) *Governor
 		stopCh: make(chan struct{}),
 	}
 
-	// Fill the token bucket. Each token represents one allowed inference call.
-	// Tokens are replenished at rate = max_inference_per_min.
+	// Start the token bucket with 1 token so the first inference call is
+	// not delayed, but without pre-filling the entire capacity — a full
+	// pre-fill would allow DG to burst MaxInferencePerMin calls immediately
+	// on startup, consuming the sustained-rate budget in seconds.
 	g.tokenBucket = make(chan struct{}, cfg.MaxInferencePerMin)
-	for i := 0; i < cfg.MaxInferencePerMin; i++ {
-		g.tokenBucket <- struct{}{}
-	}
+	g.tokenBucket <- struct{}{}
 
 	go g.metricsLoop()
 	go g.refillLoop()

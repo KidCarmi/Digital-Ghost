@@ -179,6 +179,62 @@ func queryBrowserURLViaUIA(hwnd uintptr) string {
 	return ""
 }
 
+// queryFocusedIsPassword returns true if the currently focused UI element has
+// UIA_IsPasswordPropertyId = true. This is the lightweight version used by the
+// privacy gate (queryWindowContextImpl) to populate FocusedInputRole before any
+// pixel is read. The gate then blocks the entire frame, so no pixel masking is
+// needed in that path.
+//
+// Returns false on any COM error (fail-open for role detection is acceptable
+// here because the full gate also checks ProcessName and window title; the pixel
+// masking fallback in captureFrame still runs on the pass path).
+func queryFocusedIsPassword() bool {
+	hr, _, _ := procCoInitializeEx.Call(0, 0x0)
+	if hr != 0 && hr != 1 {
+		return false
+	}
+	if hr == 0 {
+		defer procCoUninitialize.Call()
+	}
+
+	var pUIA uintptr
+	hr, _, _ = procCoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&clsidCUIAutomation)),
+		0, 0x1,
+		uintptr(unsafe.Pointer(&iidIUIAutomation)),
+		uintptr(unsafe.Pointer(&pUIA)),
+	)
+	if hr != 0 || pUIA == 0 {
+		return false
+	}
+	defer uiaRelease(pUIA)
+
+	var pFocused uintptr
+	hr, _, _ = syscall.SyscallN(
+		uiaVtblSlot(pUIA, uiaSlotGetFocusedElement),
+		pUIA,
+		uintptr(unsafe.Pointer(&pFocused)),
+	)
+	if hr != 0 || pFocused == 0 {
+		return false
+	}
+	defer uiaRelease(pFocused)
+
+	var val comVariant
+	hr, _, _ = syscall.SyscallN(
+		uiaVtblSlot(pFocused, uiaElemSlotGetCurrentPropVal),
+		pFocused,
+		uiaIsPasswordPropertyId,
+		uintptr(unsafe.Pointer(&val)),
+	)
+	if hr != 0 {
+		return false
+	}
+	defer procVariantClear.Call(uintptr(unsafe.Pointer(&val)))
+
+	return val.vt == vtBool && int16(val.data) == -1
+}
+
 // queryFocusedPasswordRect checks whether the currently focused UI element is
 // a password input field and, if so, returns its bounding rectangle in screen
 // coordinates. Returns (zero rect, false) when no password field is focused.
