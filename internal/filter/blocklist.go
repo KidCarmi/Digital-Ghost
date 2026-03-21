@@ -356,6 +356,9 @@ func hardcodedDefaults() *compiledBlocklist {
 		`(?i)proton\.me`, `(?i)protonmail\.com`,
 	}
 	titlePatterns := []string{
+		// Digital Ghost self-capture: title fallback for when Firefox URL extraction
+		// returns empty (UIA fails silently). URL pattern alone is insufficient.
+		`(?i)digital ghost`,
 		`(?i)password`, `(?i)passphrase`, `(?i)secret`,
 		`(?i)private key`, `(?i)login`, `(?i)sign in`,
 		`(?i)authenticate`, `(?i)\.env`, `(?i)credentials`,
