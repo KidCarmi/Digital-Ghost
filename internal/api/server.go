@@ -288,27 +288,57 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	var answer string
-	if sb.Len() == 0 {
-		answer = "I don't have anything relevant stored yet — keep me running and I'll start building up your memory. Try asking again in a bit!"
-	} else {
-		prompt := "You are Digital Ghost, a warm personal assistant who has been quietly watching over the user's screen to help them remember their day.\n" +
-			"The user is asking: \"" + q + "\"\n\n" +
-			"Here are some moments from their screen that seem relevant:\n\n" +
-			sb.String() +
-			"Respond naturally and warmly in 2-4 sentences, like a thoughtful friend who remembers things for them. " +
-			"Don't mention screenshots, memories, or snapshots — just speak as if you were there. " +
-			"If what you saw doesn't fully answer the question, be honest about it in a friendly way."
+	// Determine whether the best-matching memories are actually relevant.
+	// If the top score is below this threshold the question is probably
+	// conversational (greeting, chitchat) rather than a memory lookup, so we
+	// skip the memory context entirely — injecting it just causes the model to
+	// ramble about unrelated screen content.
+	const minChatContextSimilarity = 0.50
 
+	topSimilarity := 0.0
+	if len(scored) > 0 {
+		topSimilarity = scored[0].Similarity
+	}
+
+	var answer string
+	switch {
+	case sb.Len() == 0:
+		answer = "I don't have anything relevant stored yet — keep me running and I'll start building up your memory. Try asking again in a bit!"
+
+	case topSimilarity < minChatContextSimilarity:
+		// Casual / conversational query — answer directly without memory dump.
+		prompt := "You are Digital Ghost, a friendly personal memory assistant.\n" +
+			"The user said: \"" + q + "\"\n\n" +
+			"Reply in one or two short, natural sentences. " +
+			"Do NOT summarise what you have seen on screen. " +
+			"If it is a greeting, just greet back warmly."
 		answer, err = s.client.Generate(ctx, prompt)
 		if err != nil {
 			if ctx.Err() != nil {
-				// Client disconnected before we could send the answer — silent, normal.
 				s.logger.Debug("chat: client disconnected during LLM generation")
 				return
 			}
 			s.logger.Warn("chat: LLM generation failed", "error", err)
-			// Degrade gracefully — return sources without an answer.
+			answer = ""
+		}
+
+	default:
+		// Memory-anchored query — ground the answer in the retrieved context.
+		prompt := "You are Digital Ghost, a personal memory assistant.\n" +
+			"The user is asking: \"" + q + "\"\n\n" +
+			"Relevant moments from their recent screen activity:\n\n" +
+			sb.String() +
+			"Answer in 1-3 short sentences. " +
+			"Speak directly and naturally — do NOT list or describe each memory, just answer the question. " +
+			"Do not mention screenshots, snapshots, or that you watched the screen. " +
+			"If the memories don't fully answer the question, say so briefly."
+		answer, err = s.client.Generate(ctx, prompt)
+		if err != nil {
+			if ctx.Err() != nil {
+				s.logger.Debug("chat: client disconnected during LLM generation")
+				return
+			}
+			s.logger.Warn("chat: LLM generation failed", "error", err)
 			answer = ""
 		}
 	}
