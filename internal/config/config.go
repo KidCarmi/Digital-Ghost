@@ -45,6 +45,10 @@ type ResourceBudgetConfig struct {
 type InferenceConfig struct {
 	OllamaURL   string `yaml:"ollama_url"`
 	Model       string `yaml:"model"`
+	// EmbedModel is the Ollama model used for text embeddings.
+	// Defaults to "nomic-embed-text" which produces better semantic search
+	// results than using the VLM (llava:7b) for embeddings.
+	EmbedModel  string `yaml:"embed_model"`
 	TimeoutSec  int    `yaml:"timeout_sec"`
 	MaxRetries  int    `yaml:"max_retries"`
 }
@@ -89,6 +93,7 @@ func Defaults() Config {
 		Inference: InferenceConfig{
 			OllamaURL:  "http://127.0.0.1:11434",
 			Model:      "llava:7b",
+			EmbedModel: "nomic-embed-text",
 			TimeoutSec: 120, // llava:7b cold-start can take 60-90s on first load
 			MaxRetries: 2,
 		},
@@ -183,6 +188,9 @@ func (c *Config) validate() error {
 	}
 	if c.Inference.Model == "" {
 		return fmt.Errorf("inference.model must not be empty")
+	}
+	if c.Inference.EmbedModel == "" {
+		return fmt.Errorf("inference.embed_model must not be empty")
 	}
 	return nil
 }

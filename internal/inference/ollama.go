@@ -116,6 +116,10 @@ func (c *Client) Infer(ctx context.Context, frame *capture.Frame) (*InferenceRes
 		Prompt: inferencePrompt,
 		Images: []string{imgBase64},
 		Stream: false,
+		// temperature:0 makes the model deterministic and anchors it to the
+		// most-likely tokens — significantly reduces hallucination on visual
+		// content that is ambiguous or partially visible.
+		Options: map[string]any{"temperature": 0},
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -263,11 +267,12 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	return result.Description, nil
 }
 
-// Embed returns a vector embedding for the given text using the configured model.
-// The embedding can be used for semantic similarity search.
+// Embed returns a vector embedding for the given text using the configured embed model.
+// Uses EmbedModel (default: nomic-embed-text) rather than the VLM — a dedicated
+// embedding model produces significantly better semantic search results.
 func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 	reqBody := ollamaEmbedRequest{
-		Model:  c.cfg.Model,
+		Model:  c.cfg.EmbedModel,
 		Prompt: text,
 	}
 	bodyBytes, err := json.Marshal(reqBody)

@@ -29,6 +29,7 @@ $ErrorActionPreference = "Stop"
 $REQUIRED_GO_VERSION  = [version]"1.22"
 $OLLAMA_MIN_VERSION   = [version]"0.1.30"
 $DEFAULT_MODEL        = "llava:7b"
+$EMBED_MODEL          = "nomic-embed-text"
 $OLLAMA_API           = "http://127.0.0.1:11434"
 $SCRIPT_DIR           = Split-Path -Parent $MyInvocation.MyCommand.Path
 $REPO_ROOT            = Split-Path -Parent $SCRIPT_DIR
@@ -277,6 +278,50 @@ function Test-OllamaModel {
     Write-Ok "$DEFAULT_MODEL pulled"
 }
 
+function Test-OllamaEmbedModel {
+    Write-Section "Ollama Embedding Model ($EMBED_MODEL)"
+    if ($NoModel) {
+        Write-Info "Skipping embed model check (-NoModel)"
+        return
+    }
+    if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+        Write-Warn "Ollama not installed - skipping embed model check"
+        return
+    }
+
+    $running = $false
+    try {
+        $resp    = Invoke-WebRequest -Uri "$OLLAMA_API/api/tags" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        $running = ($resp.StatusCode -eq 200)
+    } catch {}
+
+    if (-not $running) {
+        Write-Warn "Ollama not running - skipping embed model check"
+        return
+    }
+
+    $listOutput = ollama list 2>$null
+    if ($listOutput -match $EMBED_MODEL) {
+        Write-Ok "$EMBED_MODEL is available locally"
+        return
+    }
+
+    Write-Warn "$EMBED_MODEL not found locally"
+    if ($CheckOnly) {
+        Write-Warn "Would run: ollama pull $EMBED_MODEL  (~270 MB download)"
+        return
+    }
+    Write-Info "Pulling $EMBED_MODEL (~270 MB)..."
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & ollama pull $EMBED_MODEL 2>&1 | ForEach-Object {
+        ($_ -replace '\x1b\[[0-9;?]*[A-Za-z]', '') -replace '\x0d', '' |
+            Where-Object { $_ -match '\S' } | ForEach-Object { Write-Host $_ }
+    }
+    $ErrorActionPreference = $prevPref
+    Write-Ok "$EMBED_MODEL pulled"
+}
+
 function Test-DPAPI {
     Write-Section "Windows DPAPI (Encryption Key Storage)"
     # DPAPI is built into Windows. Just confirm the API is accessible.
@@ -404,7 +449,12 @@ function Write-Summary {
             $list = ollama list 2>$null
             if ($list -match $modelBase) { "pulled" } else { "NOT PULLED" }
         } catch { "unknown" }
+        $embedStatus = try {
+            $list = ollama list 2>$null
+            if ($list -match $EMBED_MODEL) { "pulled" } else { "NOT PULLED" }
+        } catch { "unknown" }
         Write-Host "  $DEFAULT_MODEL       -> $modelStatus"
+        Write-Host "  $EMBED_MODEL  -> $embedStatus"
         Write-Host ""
     }
 
@@ -436,5 +486,6 @@ Test-Go
 Test-Ollama
 Test-OllamaRunning
 Test-OllamaModel
+Test-OllamaEmbedModel
 Test-GoBuild
 Write-Summary

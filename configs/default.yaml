@@ -17,6 +17,7 @@ resource_budget:
 inference:
   ollama_url: "http://127.0.0.1:11434"
   model: "llava:7b"             # Vision-Language Model via Ollama
+  embed_model: "nomic-embed-text" # Dedicated embedding model (better search quality than llava)
   timeout_sec: 30               # Per-inference timeout
   max_retries: 2
 

@@ -166,6 +166,7 @@ resource_budget:
 
 inference:
   model: llava:7b
+  embed_model: nomic-embed-text  # dedicated embedding model (better search quality)
   timeout_sec: 120    # llava:7b cold-start can take 60-90s
 
 storage:
