@@ -212,6 +212,33 @@ func (s *JSONStore) ListOlderThan(_ context.Context, _ string, before time.Time)
 	return ids, nil
 }
 
+func (s *JSONStore) ListEntriesByTime(_ context.Context, _ string) ([]StoreEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	raw, err := s.loadIndex()
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]StoreEntry, 0, len(raw))
+	for _, e := range raw {
+		idBytes, err := hex.DecodeString(e.ID)
+		if err != nil || len(idBytes) != 16 {
+			continue
+		}
+		var id [16]byte
+		copy(id[:], idBytes)
+		entries = append(entries, StoreEntry{NodeID: id, Timestamp: e.Timestamp})
+	}
+
+	// Sort descending by timestamp (most recent first).
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Timestamp.After(entries[j].Timestamp)
+	})
+	return entries, nil
+}
+
 func (s *JSONStore) Count(_ context.Context, _ string) (int, time.Time, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

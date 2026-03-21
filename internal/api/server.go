@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	_ "embed"
@@ -91,6 +92,7 @@ func New(store *storage.Store, client *inference.Client, model string, logger *s
 
 	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/api/delete", s.handleDelete)
+	mux.HandleFunc("/api/timeline", s.handleTimeline)
 
 	s.srv = &http.Server{
 		Addr:         defaultAddr,
@@ -334,6 +336,40 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("user-initiated memory deletion", "range", rangeParam, "deleted", deleted)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "range": rangeParam})
+}
+
+// handleTimeline returns memory nodes ordered by capture time descending.
+//
+// GET /api/timeline?limit=50&offset=0
+// Response: {"entries":[...],"total":N,"limit":50,"offset":0}
+func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	offset := 0
+
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	entries, total, err := s.store.Timeline(r.Context(), limit, offset)
+	if err != nil {
+		s.logger.Warn("timeline query failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "timeline failed: " + err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries": entries,
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

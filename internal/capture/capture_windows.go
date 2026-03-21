@@ -153,7 +153,7 @@ func enumChildWindowProc(childHwnd, lParam uintptr) uintptr {
 	return 1 // continue
 }
 
-// WindowsCapturer captures frames using DXGI Desktop Duplication.
+// WindowsCapturer captures frames using GDI BitBlt or DXGI Desktop Duplication.
 type WindowsCapturer struct {
 	cfg           *config.Config
 	gate          *Gate
@@ -161,6 +161,8 @@ type WindowsCapturer struct {
 	frames        chan<- *Frame
 	lastWindowKey string
 	windowSince   time.Time
+	// dxgi is non-nil when cfg.Capture.Backend == "dxgi".
+	dxgi *DXGICapturer
 }
 
 // NewCapturer returns the platform capturer for this OS.
@@ -169,14 +171,28 @@ func NewCapturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, logger *s
 }
 
 // NewWindowsCapturer creates a capturer for the primary Windows display.
+// When cfg.Capture.Backend is "dxgi", a DXGI session is opened immediately.
 func NewWindowsCapturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, logger *slog.Logger) (*WindowsCapturer, error) {
-	// Production: initialize D3D11 device, enumerate DXGI outputs, call DuplicateOutput.
-	return &WindowsCapturer{cfg: cfg, gate: gate, frames: frames, logger: logger}, nil
+	c := &WindowsCapturer{cfg: cfg, gate: gate, frames: frames, logger: logger}
+	if cfg.Capture.Backend == "dxgi" {
+		dxgi, err := NewDXGICapturer(c, logger)
+		if err != nil {
+			logger.Warn("DXGI backend unavailable; falling back to GDI", "error", err)
+		} else {
+			c.dxgi = dxgi
+			logger.Info("DXGI capture backend initialised")
+		}
+	}
+	return c, nil
 }
 
-// Run starts the DXGI capture loop. Blocks until stopCh is closed.
+// Run starts the capture loop. Blocks until stopCh is closed.
 func (c *WindowsCapturer) Run(stopCh <-chan struct{}) error {
-	c.logger.Info("Windows GDI capture loop started")
+	backend := "GDI"
+	if c.dxgi != nil {
+		backend = "DXGI"
+	}
+	c.logger.Info("Windows capture loop started", "backend", backend)
 	ticker := time.NewTicker(frameDuration(c.cfg.Capture.FPS))
 	defer ticker.Stop()
 
@@ -185,7 +201,7 @@ func (c *WindowsCapturer) Run(stopCh <-chan struct{}) error {
 	for {
 		select {
 		case <-stopCh:
-			c.logger.Info("Windows GDI capture loop stopped")
+			c.logger.Info("Windows capture loop stopped", "backend", backend)
 			return nil
 		case <-ticker.C:
 			frame, err := c.captureFrame()
@@ -371,22 +387,43 @@ func (c *WindowsCapturer) captureFrame() (*Frame, error) {
 
 	sinceInput := secondsSinceLastInput()
 
-	// Enumerate monitors and capture each one.
-	monitors := enumerateMonitors()
-	if len(monitors) == 0 {
-		// Fallback: capture primary monitor using system metrics.
-		w, _, _ := procGetSystemMetrics.Call(smCxScreen)
-		h, _, _ := procGetSystemMetrics.Call(smCyScreen)
-		monitors = []monitorInfo{{rect: image.Rect(0, 0, int(w), int(h))}}
+	// Capture pixels — prefer DXGI if the session is active.
+	var img *image.RGBA
+	var err error
+	if c.dxgi != nil {
+		img, err = c.dxgi.captureFrame()
+		if err != nil {
+			c.logger.Warn("DXGI frame capture failed; falling back to GDI", "error", err)
+			// Fall through to GDI.
+		}
 	}
 
-	// Capture the first monitor and return a single frame.
-	// Multi-monitor: one frame per display pushed to c.frames in Run().
-	// For now captureFrame returns the primary-monitor frame; callers that want
-	// all monitors should call captureAllMonitors() directly.
-	img, err := captureMonitorGDI(monitors[0].rect)
-	if err != nil {
-		return nil, fmt.Errorf("GDI capture: %w", err)
+	if img == nil && err == nil {
+		// Either DXGI returned no-new-frame (timeout) or DXGI isn't configured.
+		// For the timeout case we still want to capture via GDI so the rest of
+		// the pipeline (dwell, engagement) advances normally.
+		monitors := enumerateMonitors()
+		if len(monitors) == 0 {
+			w, _, _ := procGetSystemMetrics.Call(smCxScreen)
+			h, _, _ := procGetSystemMetrics.Call(smCyScreen)
+			monitors = []monitorInfo{{rect: image.Rect(0, 0, int(w), int(h))}}
+		}
+		img, err = captureMonitorGDI(monitors[0].rect)
+		if err != nil {
+			return nil, fmt.Errorf("GDI capture: %w", err)
+		}
+	} else if err != nil {
+		// DXGI returned a real error; try GDI as a last resort.
+		monitors := enumerateMonitors()
+		if len(monitors) == 0 {
+			w, _, _ := procGetSystemMetrics.Call(smCxScreen)
+			h, _, _ := procGetSystemMetrics.Call(smCyScreen)
+			monitors = []monitorInfo{{rect: image.Rect(0, 0, int(w), int(h))}}
+		}
+		img, err = captureMonitorGDI(monitors[0].rect)
+		if err != nil {
+			return nil, fmt.Errorf("GDI capture (after DXGI failure): %w", err)
+		}
 	}
 
 	frame := &Frame{
@@ -438,9 +475,14 @@ func (c *WindowsCapturer) captureAllMonitors(result GateResult, dwellSeconds, si
 	}
 }
 
-// Close releases DXGI resources.
-// Production: IDXGIOutputDuplication.Release(), ID3D11Device.Release().
-func (c *WindowsCapturer) Close() error { return nil }
+// Close releases capture resources.
+func (c *WindowsCapturer) Close() error {
+	if c.dxgi != nil {
+		c.dxgi.Close()
+		c.dxgi = nil
+	}
+	return nil
+}
 
 // queryWindowContextImpl is the Windows implementation of queryWindowContext.
 // Uses Win32 APIs to get the foreground window title and process name.

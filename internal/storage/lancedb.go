@@ -64,6 +64,13 @@ type Store struct {
 	db lanceDBConn
 }
 
+// StoreEntry is an ID + timestamp pair from the plaintext index.
+// Used for timeline listing without decrypting node payloads.
+type StoreEntry struct {
+	NodeID    [16]byte
+	Timestamp time.Time
+}
+
 // lanceDBConn is the interface DG uses to interact with LanceDB.
 // The production implementation wraps the lancedb-go client.
 // A stub implementation is used in tests.
@@ -86,6 +93,10 @@ type lanceDBConn interface {
 	// ListInRange lists node IDs with timestamps in [after, before).
 	// Pass a zero after to list from the beginning of time.
 	ListInRange(ctx context.Context, table string, after, before time.Time) ([][16]byte, error)
+
+	// ListEntriesByTime returns all store entries sorted by timestamp descending.
+	// Only reads the plaintext index — no decryption required.
+	ListEntriesByTime(ctx context.Context, table string) ([]StoreEntry, error)
 
 	// Count returns the total number of stored nodes and the timestamp of the
 	// most recently captured one (zero Time if no nodes exist).
@@ -202,6 +213,57 @@ func (s *Store) DeleteRange(ctx context.Context, after, before time.Time) (int, 
 // Stats returns the total node count and the timestamp of the most recent capture.
 func (s *Store) Stats(ctx context.Context) (count int, lastCapture time.Time, err error) {
 	return s.db.Count(ctx, defaultTable)
+}
+
+// TimelineEntry is a summary of a single memory node for the timeline view.
+type TimelineEntry struct {
+	ID          string    `json:"id"`
+	CapturedAt  time.Time `json:"captured_at"`
+	Description string    `json:"description"`
+	App         string    `json:"app"`
+	WindowTitle string    `json:"window_title"`
+	BrowserURL  string    `json:"browser_url,omitempty"`
+	Tags        []string  `json:"tags"`
+}
+
+// Timeline returns memory nodes ordered by capture time descending with pagination.
+// limit is the max number of entries to return; offset is the starting index.
+// Returns the page of entries and the total count of all stored nodes.
+func (s *Store) Timeline(ctx context.Context, limit, offset int) ([]TimelineEntry, int, error) {
+	entries, err := s.db.ListEntriesByTime(ctx, defaultTable)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing timeline entries: %w", err)
+	}
+	total := len(entries)
+
+	if offset >= total {
+		return nil, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	page := entries[offset:end]
+
+	results := make([]TimelineEntry, 0, len(page))
+	for _, e := range page {
+		node, err := s.Read(ctx, e.NodeID)
+		if err != nil {
+			s.logger.Debug("timeline: skipping unreadable node",
+				"id", fmt.Sprintf("%x", e.NodeID), "error", err)
+			continue
+		}
+		results = append(results, TimelineEntry{
+			ID:          fmt.Sprintf("%x", node.ID),
+			CapturedAt:  node.CapturedAt,
+			Description: node.Description,
+			App:         node.ProcessName,
+			WindowTitle: node.WindowTitle,
+			BrowserURL:  node.BrowserURL,
+			Tags:        node.Tags,
+		})
+	}
+	return results, total, nil
 }
 
 // Close releases the database connection.

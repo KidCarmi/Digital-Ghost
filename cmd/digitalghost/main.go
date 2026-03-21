@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -121,11 +122,14 @@ func run() error {
 	// gate is created after the blocklist below, but we need stopCh now.
 	// Pause/resume callbacks are wired to gate.Pause()/gate.Resume() below.
 	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+	stopFn := func() { stopOnce.Do(func() { close(stopCh) }) }
+
 	var pauseCallback, resumeCallback func()
 	if err := tray.StartTrayIcon(
 		func() { // onStop
 			logger.Info("stop requested via tray icon")
-			close(stopCh)
+			stopFn()
 		},
 		func() { // onPause — forward to gate once it's initialised
 			if pauseCallback != nil {
@@ -241,7 +245,7 @@ func run() error {
 	select {
 	case sig := <-sigCh:
 		logger.Info("received signal; shutting down", "signal", sig)
-		close(stopCh)
+		stopFn()
 	case <-stopCh:
 		logger.Info("stop channel closed; shutting down")
 	}

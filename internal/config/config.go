@@ -28,6 +28,10 @@ type CaptureConfig struct {
 	IdleFPS       float64 `yaml:"idle_fps"`
 	QueueDepth    int     `yaml:"queue_depth"`
 	HashThreshold int     `yaml:"hash_threshold"`
+	// Backend selects the screen-capture backend.
+	// "gdi"  — GDI BitBlt (default; works everywhere, higher CPU)
+	// "dxgi" — DXGI Desktop Duplication (GPU-accelerated; requires D3D11)
+	Backend string `yaml:"backend"`
 }
 
 type ResourceBudgetConfig struct {
@@ -73,6 +77,7 @@ func Defaults() Config {
 			IdleFPS:       0.5,
 			QueueDepth:    100,
 			HashThreshold: 10,
+			Backend:       "gdi",
 		},
 		ResourceBudget: ResourceBudgetConfig{
 			MaxCPUPct:          20,
@@ -160,6 +165,9 @@ func (c *Config) validate() error {
 	}
 	if c.Capture.FPS <= 0 || c.Capture.FPS > 30 {
 		return fmt.Errorf("capture.fps must be between 0 and 30, got %f", c.Capture.FPS)
+	}
+	if c.Capture.Backend != "" && c.Capture.Backend != "gdi" && c.Capture.Backend != "dxgi" {
+		return fmt.Errorf("capture.backend must be \"gdi\" or \"dxgi\", got %q", c.Capture.Backend)
 	}
 	if c.Capture.QueueDepth < 10 || c.Capture.QueueDepth > 10000 {
 		return fmt.Errorf("capture.queue_depth must be between 10 and 10000, got %d", c.Capture.QueueDepth)

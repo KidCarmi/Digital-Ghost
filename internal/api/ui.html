@@ -17,57 +17,56 @@
 
   .container { max-width: 760px; margin: 0 auto; }
 
-  header { text-align: center; margin-bottom: 40px; }
+  header { text-align: center; margin-bottom: 32px; }
   header h1 { font-size: 1.8rem; font-weight: 700; color: #a78bfa; letter-spacing: -0.02em; }
   header p  { color: #64748b; font-size: 0.9rem; margin-top: 6px; }
 
-  .search-bar {
-    display: flex; gap: 10px; margin-bottom: 32px;
+  /* ── Tabs ── */
+  .tabs {
+    display: flex; gap: 4px; margin-bottom: 28px;
+    border-bottom: 1px solid #2d3148;
   }
+  .tab-btn {
+    background: none; border: none; padding: 10px 18px;
+    color: #64748b; font-size: 0.9rem; font-weight: 500; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tab-btn:hover { color: #94a3b8; }
+  .tab-btn.active { color: #a78bfa; border-bottom-color: #7c3aed; }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── Search bar ── */
+  .search-bar { display: flex; gap: 10px; margin-bottom: 24px; }
   .search-bar input {
     flex: 1;
-    background: #1e2130;
-    border: 1px solid #2d3148;
-    border-radius: 10px;
-    padding: 14px 18px;
-    color: #e2e8f0;
-    font-size: 1rem;
-    outline: none;
+    background: #1e2130; border: 1px solid #2d3148; border-radius: 10px;
+    padding: 14px 18px; color: #e2e8f0; font-size: 1rem; outline: none;
     transition: border-color 0.15s;
   }
   .search-bar input:focus { border-color: #7c3aed; }
   .search-bar input::placeholder { color: #475569; }
   .search-bar button {
-    background: #7c3aed;
-    border: none;
-    border-radius: 10px;
-    padding: 14px 24px;
-    color: #fff;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s;
-    white-space: nowrap;
+    background: #7c3aed; border: none; border-radius: 10px;
+    padding: 14px 24px; color: #fff; font-size: 1rem;
+    font-weight: 600; cursor: pointer; transition: background 0.15s; white-space: nowrap;
   }
   .search-bar button:hover { background: #6d28d9; }
   .search-bar button:disabled { background: #374151; cursor: default; }
 
   #status-bar {
-    font-size: 0.8rem;
-    color: #475569;
-    text-align: center;
-    margin-bottom: 28px;
+    font-size: 0.8rem; color: #475569; text-align: center; margin-bottom: 24px;
   }
   #status-bar span { color: #a78bfa; font-weight: 600; }
 
-  #results { display: flex; flex-direction: column; gap: 14px; }
+  /* ── Cards ── */
+  #results, #timeline-list { display: flex; flex-direction: column; gap: 14px; }
 
   .card {
-    background: #1e2130;
-    border: 1px solid #2d3148;
-    border-radius: 12px;
-    padding: 18px 20px;
-    transition: border-color 0.15s;
+    background: #1e2130; border: 1px solid #2d3148;
+    border-radius: 12px; padding: 18px 20px; transition: border-color 0.15s;
   }
   .card:hover { border-color: #4c1d95; }
 
@@ -79,55 +78,49 @@
     background: #2d3148; border-radius: 6px;
     padding: 2px 8px; color: #a78bfa; font-weight: 600;
   }
-  .card-meta .score {
-    margin-left: auto; color: #34d399; font-weight: 600;
-  }
+  .card-meta .score { margin-left: auto; color: #34d399; font-weight: 600; }
 
-  .card-desc {
-    font-size: 0.95rem; line-height: 1.6; color: #cbd5e1;
-  }
+  .card-desc { font-size: 0.95rem; line-height: 1.6; color: #cbd5e1; }
 
-  .card-tags {
-    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;
-  }
+  .card-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
   .card-tags span {
     background: #1a1f33; border: 1px solid #2d3148;
     border-radius: 20px; padding: 2px 10px;
     font-size: 0.73rem; color: #64748b;
   }
 
+  /* ── Chat answer box ── */
   .answer-box {
-    background: #16213a;
-    border: 1px solid #3730a3;
-    border-radius: 12px;
-    padding: 20px 22px;
-    margin-bottom: 20px;
-    line-height: 1.65;
-    color: #e2e8f0;
-    font-size: 0.97rem;
-    position: relative;
+    background: #16213a; border: 1px solid #3730a3;
+    border-radius: 12px; padding: 20px 22px; margin-bottom: 20px;
+    line-height: 1.65; color: #e2e8f0; font-size: 0.97rem;
   }
-  .answer-box::before {
-    content: "◉";
-    color: #a78bfa;
-    font-size: 0.75rem;
-    margin-right: 8px;
-  }
+  .answer-box::before { content: "◉ "; color: #a78bfa; font-size: 0.75rem; }
   .sources-label {
-    font-size: 0.75rem;
-    color: #475569;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: 10px;
-    margin-top: 4px;
+    font-size: 0.75rem; color: #475569; text-transform: uppercase;
+    letter-spacing: 0.08em; margin-bottom: 10px; margin-top: 4px;
   }
 
-  .empty { text-align: center; color: #475569; padding: 60px 0; font-size: 0.95rem; }
-  .error { text-align: center; color: #f87171; padding: 40px 0; font-size: 0.9rem; }
-
-  .manage-toggle {
-    text-align: center; margin-bottom: 28px;
+  /* ── Timeline day header ── */
+  .day-header {
+    font-size: 0.75rem; font-weight: 700; color: #475569;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 20px 0 8px; border-top: 1px solid #1e2130; margin-top: 6px;
   }
+  .day-header:first-child { border-top: none; margin-top: 0; }
+
+  /* ── Load more ── */
+  #load-more-btn {
+    display: none; margin: 20px auto 0;
+    background: none; border: 1px solid #2d3148; border-radius: 10px;
+    color: #94a3b8; font-size: 0.9rem; padding: 10px 28px; cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  #load-more-btn:hover { border-color: #7c3aed; color: #a78bfa; }
+  #load-more-btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* ── Manage panel ── */
+  .manage-toggle { text-align: center; margin-bottom: 28px; }
   .manage-toggle button {
     background: none; border: 1px solid #2d3148; border-radius: 8px;
     color: #475569; font-size: 0.8rem; padding: 6px 14px; cursor: pointer;
@@ -143,9 +136,7 @@
     font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em;
     color: #475569; margin-bottom: 14px;
   }
-  .manage-panel .delete-row {
-    display: flex; flex-wrap: wrap; gap: 10px;
-  }
+  .manage-panel .delete-row { display: flex; flex-wrap: wrap; gap: 10px; }
   .manage-panel .del-btn {
     background: #1e2130; border: 1px solid #3d1f1f; border-radius: 8px;
     color: #f87171; font-size: 0.85rem; padding: 8px 16px; cursor: pointer;
@@ -154,9 +145,11 @@
   .manage-panel .del-btn:hover { background: #2a1a1a; border-color: #f87171; }
   .manage-panel .del-btn:disabled { opacity: 0.4; cursor: default; }
   .manage-panel .del-btn.all { border-color: #7f1d1d; color: #fca5a5; }
-  .manage-panel .del-status {
-    font-size: 0.8rem; color: #475569; margin-top: 10px; min-height: 1.2em;
-  }
+  .manage-panel .del-status { font-size: 0.8rem; color: #475569; margin-top: 10px; min-height: 1.2em; }
+
+  /* ── Misc ── */
+  .empty { text-align: center; color: #475569; padding: 60px 0; font-size: 0.95rem; }
+  .error { text-align: center; color: #f87171; padding: 40px 0; font-size: 0.9rem; }
 
   .spinner {
     display: inline-block; width: 16px; height: 16px;
@@ -171,32 +164,47 @@
 <div class="container">
   <header>
     <h1>◉ Digital Ghost</h1>
-    <p>Search your local encrypted memory</p>
+    <p>Your local encrypted memory</p>
   </header>
-
-  <div class="search-bar">
-    <input id="q" type="text" placeholder="What were you working on?..." autofocus />
-    <button id="btn" onclick="search()">Search</button>
-  </div>
 
   <div id="status-bar">Loading status...</div>
 
-  <div class="manage-toggle">
-    <button onclick="toggleManage()">Manage memories</button>
+  <!-- Tab bar -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('search')">Search</button>
+    <button class="tab-btn" onclick="switchTab('timeline')">Timeline</button>
   </div>
 
-  <div class="manage-panel" id="manage-panel">
-    <h3>Clear memories</h3>
-    <div class="delete-row">
-      <button class="del-btn" onclick="deleteRange('today')">Today</button>
-      <button class="del-btn" onclick="deleteRange('week')">This week</button>
-      <button class="del-btn" onclick="deleteRange('month')">This month</button>
-      <button class="del-btn all" onclick="deleteRange('all')">All memories</button>
+  <!-- ── Search tab ── -->
+  <div id="tab-search" class="tab-panel active">
+    <div class="search-bar">
+      <input id="q" type="text" placeholder="What were you working on?..." autofocus />
+      <button id="btn" onclick="search()">Search</button>
     </div>
-    <div class="del-status" id="del-status"></div>
+
+    <div class="manage-toggle">
+      <button onclick="toggleManage()">Manage memories</button>
+    </div>
+
+    <div class="manage-panel" id="manage-panel">
+      <h3>Clear memories</h3>
+      <div class="delete-row">
+        <button class="del-btn" onclick="deleteRange('today')">Today</button>
+        <button class="del-btn" onclick="deleteRange('week')">This week</button>
+        <button class="del-btn" onclick="deleteRange('month')">This month</button>
+        <button class="del-btn all" onclick="deleteRange('all')">All memories</button>
+      </div>
+      <div class="del-status" id="del-status"></div>
+    </div>
+
+    <div id="results"></div>
   </div>
 
-  <div id="results"></div>
+  <!-- ── Timeline tab ── -->
+  <div id="tab-timeline" class="tab-panel">
+    <div id="timeline-list"></div>
+    <button id="load-more-btn" onclick="loadMoreTimeline()">Load more</button>
+  </div>
 </div>
 
 <script>
@@ -210,6 +218,22 @@
 
   qEl.addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
 
+  // ── Tab switching ──────────────────────────────────────────────────────────
+
+  function switchTab(name) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+      b.classList.toggle('active', b.textContent.toLowerCase() === name ||
+        (name === 'search' && i === 0) || (name === 'timeline' && i === 1));
+    });
+    document.getElementById('tab-search').classList.toggle('active', name === 'search');
+    document.getElementById('tab-timeline').classList.toggle('active', name === 'timeline');
+    if (name === 'timeline' && timelineOffset === 0 && !timelineLoaded) {
+      loadTimeline();
+    }
+  }
+
+  // ── Status ─────────────────────────────────────────────────────────────────
+
   async function loadStatus() {
     try {
       const r = await fetch('/api/status');
@@ -220,6 +244,8 @@
       stat.textContent = 'Daemon not reachable';
     }
   }
+
+  // ── Search ─────────────────────────────────────────────────────────────────
 
   async function search() {
     const q = qEl.value.trim();
@@ -240,15 +266,13 @@
       }
 
       let html = '';
-      if (d.answer) {
-        html += `<div class="answer-box">${esc(d.answer)}</div>`;
-      }
+      if (d.answer) html += `<div class="answer-box">${esc(d.answer)}</div>`;
       if (hasSources) {
         html += `<div class="sources-label">Memory sources</div>`;
         html += d.sources.map(renderCard).join('');
       }
       res.innerHTML = html;
-    } catch (e) {
+    } catch {
       showError('Could not reach Digital Ghost daemon.');
     } finally {
       btn.disabled = false;
@@ -256,8 +280,71 @@
     }
   }
 
+  // ── Timeline ───────────────────────────────────────────────────────────────
+
+  let timelineOffset  = 0;
+  let timelineTotal   = 0;
+  let timelineLoaded  = false;
+  const TIMELINE_LIMIT = 50;
+
+  async function loadTimeline() {
+    const list    = document.getElementById('timeline-list');
+    const moreBtn = document.getElementById('load-more-btn');
+    moreBtn.disabled = true;
+
+    if (timelineOffset === 0) {
+      list.innerHTML = '<div class="empty"><span class="spinner"></span></div>';
+    }
+
+    try {
+      const r = await fetch(`/api/timeline?limit=${TIMELINE_LIMIT}&offset=${timelineOffset}`);
+      const d = await r.json();
+      if (!r.ok) {
+        list.innerHTML = `<div class="error">${esc(d.error || 'Failed to load timeline')}</div>`;
+        return;
+      }
+
+      timelineTotal  = d.total;
+      timelineLoaded = true;
+
+      if (timelineOffset === 0) list.innerHTML = '';
+
+      if (d.entries && d.entries.length > 0) {
+        let lastDay = '';
+        for (const entry of d.entries) {
+          const day = fmtDay(entry.captured_at);
+          if (day !== lastDay) {
+            lastDay = day;
+            const h = document.createElement('div');
+            h.className = 'day-header';
+            h.textContent = day;
+            list.appendChild(h);
+          }
+          list.insertAdjacentHTML('beforeend', renderCard(entry));
+        }
+        timelineOffset += d.entries.length;
+      }
+
+      if (timelineOffset === 0 && (!d.entries || d.entries.length === 0)) {
+        list.innerHTML = '<div class="empty">No memories yet. DG will start building your timeline once it captures some frames.</div>';
+      }
+
+      moreBtn.style.display = timelineOffset < timelineTotal ? 'block' : 'none';
+    } catch {
+      if (timelineOffset === 0) list.innerHTML = '<div class="error">Could not reach Digital Ghost daemon.</div>';
+    } finally {
+      moreBtn.disabled = false;
+    }
+  }
+
+  function loadMoreTimeline() {
+    loadTimeline();
+  }
+
+  // ── Shared helpers ─────────────────────────────────────────────────────────
+
   function renderCard(n) {
-    const tags = (n.tags || []).map(t => `<span>${t}</span>`).join('');
+    const tags = (n.tags || []).map(t => `<span>${esc(t)}</span>`).join('');
     const pct  = n.similarity != null ? Math.round(n.similarity * 100) + '%' : '';
     return `
       <div class="card">
@@ -278,8 +365,19 @@
 
   function fmtTime(iso) {
     if (!iso) return '';
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  }
+
+  function fmtDay(iso) {
+    if (!iso) return 'Unknown date';
     try {
-      return new Date(iso).toLocaleString();
+      const d = new Date(iso);
+      const today    = new Date(); today.setHours(0,0,0,0);
+      const yesterday = new Date(today); yesterday.setDate(today.getDate()-1);
+      const day = new Date(d); day.setHours(0,0,0,0);
+      if (day.getTime() === today.getTime())     return 'Today';
+      if (day.getTime() === yesterday.getTime()) return 'Yesterday';
+      return d.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
     } catch { return iso; }
   }
 
@@ -293,11 +391,10 @@
     document.getElementById('del-status').textContent = '';
   }
 
-  const rangeLabels = { today: "today's", week: "this week's", month: "this month's", all: "all" };
+  const rangeLabels = { today:"today's", week:"this week's", month:"this month's", all:"all" };
 
   async function deleteRange(range) {
-    const label = rangeLabels[range] || range;
-    const confirmed = confirm(`Delete ${label} memories? This cannot be undone.`);
+    const confirmed = confirm(`Delete ${rangeLabels[range] || range} memories? This cannot be undone.`);
     if (!confirmed) return;
 
     const delStatus = document.getElementById('del-status');
@@ -316,6 +413,9 @@
       } else {
         delStatus.textContent = `Deleted ${d.deleted} memor${d.deleted === 1 ? 'y' : 'ies'}.`;
         loadStatus();
+        // Reset timeline so it refreshes when the user next opens it
+        timelineOffset = 0; timelineLoaded = false;
+        document.getElementById('timeline-list').innerHTML = '';
       }
     } catch {
       delStatus.textContent = 'Could not reach daemon.';

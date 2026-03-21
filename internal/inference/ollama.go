@@ -68,12 +68,20 @@ type ollamaGenerateResponse struct {
 // inferencePrompt is the prompt sent to the VLM.
 // Tuned to produce warm, personal memory notes that read like a thoughtful
 // human recall rather than a robotic screen description.
+// Uncertainty rules prevent fabrication: if the image is unclear, the model
+// must say so rather than guess.
 const inferencePrompt = `You're helping someone remember what they were doing. Write a short, warm memory note — like a friend describing what they noticed on the screen, in plain conversational English.
 
-Focus on:
-- What the person was actually doing or reading (be specific and useful)
+CRITICAL — honesty rules (follow these exactly):
+- Only describe what you can actually see clearly. If text is blurry, small, or hard to read, say "there was some text I couldn't quite make out" rather than guessing what it said.
+- If the screen is mostly blank, a loading spinner, or unrecognisable, say "the screen seemed mostly blank or loading" — don't invent content.
+- Never name specific people, companies, or projects unless the name is clearly legible in the image.
+- Use phrases like "it looked like", "there seemed to be", "I could make out" when you're not fully certain.
+
+Focus on (only what's clearly visible):
+- What the person was actually doing or reading
 - The main topic, project, or task they seemed to be working on
-- Any meaningful text, code, names, or ideas that were visible
+- Any meaningful text, code, names, or ideas that were clearly visible
 
 Skip entirely:
 - Toolbars, window chrome, UI widgets, and menu bars
