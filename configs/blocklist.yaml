@@ -41,6 +41,11 @@ auth_patterns:
 # ─── Browser URL Patterns (regex) ────────────────────────────────────
 # Matched against the browser's URL bar via accessibility API
 url_patterns:
+  # Digital Ghost self-capture exclusion — DG's own search UI must not be
+  # captured. Without this, llava:7b sees the dark card-based UI and
+  # hallucinates "video game interface", creating a feedback loop.
+  - "(?i)^localhost:7327"
+  - "(?i)^127\\.0\\.0\\.1:7327"
   # Banking (broad match intentional — false positives preferred)
   - "(?i)bank"
   - "(?i)banking"
@@ -93,6 +98,9 @@ url_patterns:
 # ─── Window Title Patterns (regex) ───────────────────────────────────
 # Matched against the active window title
 title_patterns:
+  # Digital Ghost self-capture exclusion — catches the search/memory UI
+  # when no URL is available (e.g. Chromium omnibox not focused).
+  - "(?i)digital ghost"
   - "(?i)password"
   - "(?i)passphrase"
   - "(?i)secret"
