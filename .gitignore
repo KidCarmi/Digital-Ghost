@@ -1,7 +1,7 @@
 # Build artifacts
 /bin/
 /dist/
-digitalghost
+/digitalghost
 
 # Go
 *.test
