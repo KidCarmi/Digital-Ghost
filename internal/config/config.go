@@ -120,17 +120,16 @@ func Load(path string) (*Config, error) {
 			if verr := cfg.validate(); verr != nil {
 				return nil, fmt.Errorf("default config is invalid: %w", verr)
 			}
-			return &cfg, nil
+		} else {
+			return nil, fmt.Errorf("reading config file %q: %w", expanded, err)
 		}
-		return nil, fmt.Errorf("reading config file %q: %w", expanded, err)
-	}
-
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config file %q: %w", expanded, err)
-	}
-
-	if err := cfg.validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+	} else {
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return nil, fmt.Errorf("parsing config file %q: %w", expanded, err)
+		}
+		if err := cfg.validate(); err != nil {
+			return nil, fmt.Errorf("invalid config: %w", err)
+		}
 	}
 
 	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
