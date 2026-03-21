@@ -214,7 +214,7 @@ func secureDeleteFile(path string) error {
 			f.Close()
 			return err
 		}
-		buf := make([]byte, min(4096, int(size)))
+		buf := make([]byte, min(int64(4096), size))
 		for i := range buf {
 			buf[i] = fillByte
 		}

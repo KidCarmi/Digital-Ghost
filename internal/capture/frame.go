@@ -76,6 +76,20 @@ func IsDuplicate(a, b *Frame, threshold int) (bool, error) {
 	return dist < threshold, nil
 }
 
+// Capturer is the common interface for all platform screen capture backends.
+type Capturer interface {
+	Run(stopCh <-chan struct{}) error
+	Close() error
+}
+
+// frameDuration converts FPS to a time.Duration for the capture ticker.
+func frameDuration(fps float64) time.Duration {
+	if fps <= 0 {
+		fps = 1
+	}
+	return time.Duration(float64(time.Second) / fps)
+}
+
 // errNilImage is returned when a nil image is passed to HashFrame.
 var errNilImage = errString("frame image is nil")
 

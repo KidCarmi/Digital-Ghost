@@ -203,7 +203,7 @@ func run() error {
 
 // runCaptureLoop is the capture goroutine.
 func runCaptureLoop(cfg *config.Config, gate *capture.Gate, q *inference.Queue, stopCh <-chan struct{}, logger *slog.Logger) {
-	capturer, err := capture.NewX11Capturer(cfg, gate, makeChan(q), logger)
+	capturer, err := capture.NewCapturer(cfg, gate, makeChan(q), logger)
 	if err != nil {
 		logger.Error("failed to initialize X11 capturer", "error", err)
 		return

@@ -40,6 +40,11 @@ type WindowsCapturer struct {
 	frames chan<- *Frame
 }
 
+// NewCapturer returns the platform capturer for this OS.
+func NewCapturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, logger *slog.Logger) (Capturer, error) {
+	return NewWindowsCapturer(cfg, gate, frames, logger)
+}
+
 // NewWindowsCapturer creates a capturer for the primary Windows display.
 func NewWindowsCapturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, logger *slog.Logger) (*WindowsCapturer, error) {
 	// Production: initialize D3D11 device, enumerate DXGI outputs, call DuplicateOutput.

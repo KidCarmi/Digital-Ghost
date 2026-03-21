@@ -34,6 +34,11 @@ type X11Capturer struct {
 	shmInfo    uintptr
 }
 
+// NewCapturer returns the platform capturer for this OS.
+func NewCapturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, logger *slog.Logger) (Capturer, error) {
+	return NewX11Capturer(cfg, gate, frames, logger)
+}
+
 // NewX11Capturer creates a capturer for the primary X11 display.
 // Returns an error if the display cannot be opened or XShm is unavailable.
 func NewX11Capturer(cfg *config.Config, gate *Gate, frames chan<- *Frame, logger *slog.Logger) (*X11Capturer, error) {
@@ -164,10 +169,3 @@ func captureDisplayStub() image.Image {
 	return image.NewRGBA(image.Rect(0, 0, 1920, 1080))
 }
 
-// frameDuration converts FPS to a time.Duration for the ticker.
-func frameDuration(fps float64) time.Duration {
-	if fps <= 0 {
-		fps = 1
-	}
-	return time.Duration(float64(time.Second) / fps)
-}

@@ -121,7 +121,10 @@ func generateKey() ([]byte, error) {
 	password := entropy[:saltLen]
 	salt := entropy[saltLen:]
 
-	key := pbkdf2.Key(password, salt, pbkdf2Iterations, keyLen, sha256.New)
+	key, err := pbkdf2.Key(sha256.New, string(password), salt, pbkdf2Iterations, keyLen)
+	if err != nil {
+		return nil, fmt.Errorf("deriving key with PBKDF2: %w", err)
+	}
 	return key, nil
 }
 
