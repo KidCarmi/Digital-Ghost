@@ -353,6 +353,8 @@ function Test-GoBuild {
         return
     }
     Push-Location $REPO_ROOT
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
         Write-Info "Running go mod tidy in $REPO_ROOT"
         $tidyOut = go mod tidy 2>&1
@@ -364,10 +366,7 @@ function Test-GoBuild {
         }
 
         Write-Info "Running go build ./... in $REPO_ROOT"
-        $prevPref = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
         $output = go build ./... 2>&1
-        $ErrorActionPreference = $prevPref
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "go build ./... succeeded"
         } else {
@@ -376,6 +375,7 @@ function Test-GoBuild {
             Write-Warn "This may be expected until all cgo/platform dependencies are in place."
         }
     } finally {
+        $ErrorActionPreference = $prevPref
         Pop-Location
     }
 }
