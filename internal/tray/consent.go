@@ -16,8 +16,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
+
+// showConsentDialog presents the consent dialog to the user and returns
+// true if they explicitly granted consent.
+func showConsentDialog(text string) (granted bool, err error) {
+	if os.Getenv("DG_HEADLESS_CONSENT") == "1" {
+		fmt.Fprintln(os.Stderr, "WARNING: DG_HEADLESS_CONSENT=1 bypassing consent dialog (test mode only)")
+		return true, nil
+	}
+	return showConsentDialogImpl(text)
+}
+
+// currentPlatform returns a string identifying the current OS.
+func currentPlatform() string {
+	return runtime.GOOS
+}
 
 // consentDialogText is the canonical text of the consent dialog.
 // Its SHA-256 hash is stored in consent.json so we can detect if the
