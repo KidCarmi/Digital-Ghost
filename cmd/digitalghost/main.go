@@ -475,9 +475,19 @@ func runInferenceLoop(
 			logger.Debug("embedding failed (non-fatal); storing without vector", "error", embedErr)
 		}
 
-		coherenceScore, err := coherence.Check(context.Background(), embedding)
-		if err != nil {
-			logger.Debug("coherence check failed (non-fatal)", "error", err)
+		// ARCH-3: fail-closed coherence check.
+		// When embedding is unavailable, treat the node as incoherent so the
+		// stricter IsolatedNodeScore threshold applies. Calling coherence.Check
+		// with a nil embedding would bootstrap-pass (open) — wrong direction.
+		var coherenceScore graph.CoherenceScore
+		if embedErr != nil {
+			coherenceScore = graph.CoherenceScore{IsCoherent: false}
+		} else {
+			var err error
+			coherenceScore, err = coherence.Check(context.Background(), embedding)
+			if err != nil {
+				logger.Debug("coherence check failed (non-fatal)", "error", err)
+			}
 		}
 
 		requiredScore := cfg.SemanticFilter.MinEngagementScore
