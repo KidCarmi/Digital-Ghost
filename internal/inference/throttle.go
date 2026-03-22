@@ -135,6 +135,20 @@ func (g *Governor) GPUPercent() int {
 	return int(g.gpuPercent.Load())
 }
 
+// DrainBucket empties the token bucket without blocking.
+// Call this when Ollama recovers after a crash so the burst of accumulated
+// tokens (filled by refillLoop during the outage) doesn't cause an immediate
+// volley of inference calls on reconnect.
+func (g *Governor) DrainBucket() {
+	for {
+		select {
+		case <-g.tokenBucket:
+		default:
+			return
+		}
+	}
+}
+
 // Close stops the background goroutines.
 func (g *Governor) Close() {
 	close(g.stopCh)

@@ -376,6 +376,13 @@ func runInferenceLoop(
 	stopCh <-chan struct{},
 	logger *slog.Logger,
 ) {
+	// ARCH-2: track consecutive Ollama failures for exponential backoff.
+	// When Ollama crashes and restarts, the token bucket fills during the outage
+	// (refillLoop keeps adding tokens). On reconnect we drain the bucket so the
+	// first successful inference doesn't cause a GPU burst.
+	var consecutiveFails int
+	const maxBackoff = 60 * time.Second
+
 	for {
 		frame := q.Pop(stopCh)
 		if frame == nil {
@@ -422,11 +429,33 @@ func runInferenceLoop(
 		}
 
 		// Run inference.
-		result, err := client.Infer(ctx, frame)
+		result, inferErr := client.Infer(ctx, frame)
 		cancel()
-		if err != nil {
-			logger.Warn("inference failed", "error", err)
+		if inferErr != nil {
+			consecutiveFails++
+			// Exponential backoff: 2s, 4s, 8s … capped at maxBackoff.
+			backoff := time.Duration(1<<consecutiveFails) * time.Second
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			logger.Warn("inference failed; backing off",
+				"error", inferErr,
+				"consecutive_fails", consecutiveFails,
+				"backoff", backoff)
+			select {
+			case <-time.After(backoff):
+			case <-stopCh:
+				return
+			}
 			continue
+		}
+		// Inference succeeded. If recovering from a crash, drain the token bucket
+		// so accumulated tokens don't fire all queued frames at once.
+		if consecutiveFails > 0 {
+			logger.Info("Ollama recovered; draining token bucket to prevent burst",
+				"previous_consecutive_fails", consecutiveFails)
+			gov.DrainBucket()
+			consecutiveFails = 0
 		}
 
 		// Compute engagement score.

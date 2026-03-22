@@ -157,6 +157,10 @@ func queryWindowContextImpl() (windowMetadata, error) {
 	)
 }
 
+// queryVisibleBackgroundProcessesImpl returns nil on Linux X11.
+// Background window enumeration requires a complete AT-SPI2 or EWMH implementation.
+func queryVisibleBackgroundProcessesImpl() []string { return nil }
+
 // captureDisplayStub returns a placeholder image for the architecture scaffold.
 // Production: remove this and use actual XShmGetImage output.
 func captureDisplayStub() image.Image {

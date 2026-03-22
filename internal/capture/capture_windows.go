@@ -62,6 +62,8 @@ var (
 	procGetTickCount                = kernel32.NewProc("GetTickCount")
 	procEnumDisplayMonitors         = user32.NewProc("EnumDisplayMonitors")
 	procEnumChildWindows            = user32.NewProc("EnumChildWindows")
+	procEnumWindows                 = user32.NewProc("EnumWindows")
+	procIsWindowVisible             = user32.NewProc("IsWindowVisible")
 	procGetClassNameW               = user32.NewProc("GetClassNameW")
 	procSendMessageW                = user32.NewProc("SendMessageW")
 	procGetWindowRect               = user32.NewProc("GetWindowRect")
@@ -593,6 +595,50 @@ func (c *WindowsCapturer) Close() error {
 		c.dxgi = nil
 	}
 	return nil
+}
+
+// queryVisibleBackgroundProcessesImpl returns the process names of all visible
+// top-level windows that are NOT the current foreground window.
+// Uses EnumWindows to walk all top-level HWNDs; skips invisible and the
+// foreground window. Only the process name is returned — enough for blocklist matching.
+func queryVisibleBackgroundProcessesImpl() []string {
+	foreground, _, _ := procGetForegroundWindow.Call()
+
+	var procs []string
+
+	cb := syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
+		if hwnd == foreground {
+			return 1 // skip foreground — already checked by queryWindowContextImpl
+		}
+		// IsWindowVisible returns non-zero for visible windows.
+		vis, _, _ := procIsWindowVisible.Call(hwnd)
+		if vis == 0 {
+			return 1
+		}
+		// Get PID, then process name.
+		var pid uint32
+		procGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+		if pid == 0 {
+			return 1
+		}
+		hProc, _, _ := procOpenProcess.Call(processQueryLimitedInformation, 0, uintptr(pid))
+		if hProc == 0 {
+			return 1
+		}
+		defer procCloseHandle.Call(hProc)
+		var exeBuf [windows.MAX_PATH]uint16
+		size := uint32(len(exeBuf))
+		ret, _, _ := procQueryFullProcessImageNameW.Call(hProc, 0,
+			uintptr(unsafe.Pointer(&exeBuf[0])), uintptr(unsafe.Pointer(&size)))
+		if ret != 0 {
+			fullPath := syscall.UTF16ToString(exeBuf[:size])
+			procs = append(procs, strings.ToLower(filepath.Base(fullPath)))
+		}
+		return 1 // continue enumeration
+	})
+
+	procEnumWindows.Call(cb, 0)
+	return procs
 }
 
 // queryWindowContextImpl is the Windows implementation of queryWindowContext.

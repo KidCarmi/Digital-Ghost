@@ -75,7 +75,7 @@ func (g *Gate) Check() GateResult {
 		}
 	}
 
-	// Step 2: Apply the blocklist.
+	// Step 2: Apply the blocklist to the foreground window.
 	decision := g.blocklist.Check(filter.WindowContext{
 		ProcessName:      ctx.ProcessName,
 		WindowTitle:      ctx.WindowTitle,
@@ -89,6 +89,22 @@ func (g *Gate) Check() GateResult {
 			"process", ctx.ProcessName,
 			"reason", decision.Reason)
 		return GateResult{Blocked: true, Reason: decision.Reason}
+	}
+
+	// Step 2b: ARCH-5 — check all OTHER visible windows (not just foreground).
+	// A password manager open on display 2 behind another window must block capture
+	// even though it is not the foreground window. We only need the process name
+	// for each background window; titles and URLs are not checked for performance.
+	for _, bgProc := range queryVisibleBackgroundProcesses() {
+		bgDecision := g.blocklist.Check(filter.WindowContext{ProcessName: bgProc})
+		if bgDecision.Blocked {
+			g.logger.Debug("frame blocked: background window matches blocklist",
+				"process", bgProc, "reason", bgDecision.Reason)
+			return GateResult{
+				Blocked: true,
+				Reason:  fmt.Sprintf("background_window:%s", bgDecision.Reason),
+			}
+		}
 	}
 
 	// Step 3: Check for sensitive input role even if process is not on the blocklist.
@@ -152,4 +168,15 @@ type windowMetadata struct {
 // (Check) will treat any error as a block decision.
 func queryWindowContext() (windowMetadata, error) {
 	return queryWindowContextImpl()
+}
+
+// queryVisibleBackgroundProcesses returns the process names of all visible
+// top-level windows that are NOT the current foreground window.
+// Used by Check() to block capture when a sensitive app is visible on any monitor.
+// Returns nil on platforms that do not implement this (non-Windows).
+// Implemented per platform:
+//   - capture_windows.go: EnumWindows + IsWindowVisible + process name lookup
+//   - capture_unsupported.go + capture_linux_x11.go: returns nil (graceful no-op)
+func queryVisibleBackgroundProcesses() []string {
+	return queryVisibleBackgroundProcessesImpl()
 }

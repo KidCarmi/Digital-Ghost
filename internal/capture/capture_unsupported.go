@@ -37,6 +37,10 @@ func queryWindowContextImpl() (windowMetadata, error) {
 	return windowMetadata{}, errUnsupportedPlatform
 }
 
+// queryVisibleBackgroundProcessesImpl returns nil on unsupported platforms.
+// Background window enumeration is only implemented on Windows.
+func queryVisibleBackgroundProcessesImpl() []string { return nil }
+
 func captureDisplayStub() image.Image {
 	return image.NewRGBA(image.Rect(0, 0, 1920, 1080))
 }
