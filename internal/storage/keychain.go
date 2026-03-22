@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"runtime"
 
 	keyring "github.com/zalando/go-keyring"
@@ -51,7 +52,7 @@ type KeyManager struct {
 //
 // This must be called before any data is read or written.
 // The returned KeyManager must be closed when the process exits.
-func NewKeyManager() (*KeyManager, error) {
+func NewKeyManager(logger *slog.Logger) (*KeyManager, error) {
 	raw, err := keyring.Get(keychainService, keychainAccount)
 	if err == nil {
 		// Key exists; decode and return.
@@ -62,6 +63,8 @@ func NewKeyManager() (*KeyManager, error) {
 		if len(key) != keyLen {
 			return nil, fmt.Errorf("keychain key has wrong length %d (expected %d); entry may be corrupt", len(key), keyLen)
 		}
+		// SEC-4: prevent key pages from being swapped to disk.
+		mlockKey(key, logger)
 		return &KeyManager{key: key}, nil
 	}
 
@@ -82,6 +85,8 @@ func NewKeyManager() (*KeyManager, error) {
 		return nil, fmt.Errorf("%w: failed to store new key: %v", ErrKeychainUnavailable, err)
 	}
 
+	// SEC-4: prevent key pages from being swapped to disk.
+	mlockKey(key, logger)
 	return &KeyManager{key: key}, nil
 }
 
@@ -91,8 +96,9 @@ func (km *KeyManager) Key() []byte {
 	return km.key
 }
 
-// Close zeros the in-memory key. Must be called when the daemon exits.
+// Close munlocks and zeros the in-memory key. Must be called when the daemon exits.
 func (km *KeyManager) Close() {
+	_ = munlockKey(km.key)
 	zeroBytes(km.key)
 }
 

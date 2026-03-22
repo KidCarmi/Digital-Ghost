@@ -110,7 +110,7 @@ func run() error {
 	}
 
 	// ── Step 3: Encryption and keychain ──────────────────────────────────────
-	km, err := storage.NewKeyManager()
+	km, err := storage.NewKeyManager(logger)
 	if err != nil {
 		return fmt.Errorf("keychain initialization failed: %w\n\n"+
 			"Digital Ghost requires OS keychain access to protect your data.\n"+
@@ -551,7 +551,7 @@ func runStatus(cfg *config.Config, logger *slog.Logger) error {
 	fmt.Printf("Max CPU        : %d%%  Max GPU: %d%%\n", cfg.ResourceBudget.MaxCPUPct, cfg.ResourceBudget.MaxGPUPct)
 
 	// Live store stats — open the store read-only to count nodes.
-	km, err := storage.NewKeyManager()
+	km, err := storage.NewKeyManager(slog.Default())
 	if err != nil {
 		fmt.Printf("Memory nodes   : (keychain unavailable: %v)\n", err)
 		return nil

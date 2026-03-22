@@ -17,9 +17,19 @@ import (
 	"github.com/KidCarmi/digital-ghost/internal/graph"
 )
 
+// currentSchemaVersion is incremented whenever the MemoryNode JSON layout
+// changes in a backwards-incompatible way. On read, nodes with an older
+// SchemaVersion can be migrated or flagged rather than silently misinterpreted.
+const currentSchemaVersion = 1
+
 // MemoryNode is the semantic unit stored in the vector database.
 // It represents a single captured screen context that passed all quality filters.
 type MemoryNode struct {
+	// SchemaVersion records the layout version at write time.
+	// Zero means "pre-versioning" (legacy nodes written before this field existed).
+	// Increment currentSchemaVersion whenever a breaking field change is made.
+	SchemaVersion int `json:"schema_version"`
+
 	// ID is a unique identifier for this node (UUID v4, stored as [16]byte).
 	ID [16]byte
 
@@ -120,6 +130,8 @@ func NewStore(encryptor *Encryptor, db lanceDBConn, dataDir string, logger *slog
 
 // Write encrypts and stores a MemoryNode.
 func (s *Store) Write(ctx context.Context, node *MemoryNode) error {
+	node.SchemaVersion = currentSchemaVersion
+
 	payload, err := json.Marshal(node)
 	if err != nil {
 		return fmt.Errorf("marshaling node %x: %w", node.ID, err)
@@ -281,7 +293,8 @@ func (s *Store) Timeline(ctx context.Context, limit, offset int) ([]TimelineEntr
 	return results, total, nil
 }
 
-// Close releases the database connection.
+// Close releases the database connection and zeros the encryptor's key copy.
 func (s *Store) Close() error {
+	s.encryptor.Close()
 	return s.db.Close()
 }

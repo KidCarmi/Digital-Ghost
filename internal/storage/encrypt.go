@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"time"
 )
 
@@ -61,6 +62,17 @@ func NewEncryptor(key []byte) (*Encryptor, error) {
 	}
 	// Retain key reference for HMAC; do not copy (the KeyManager owns it).
 	return &Encryptor{block: block, key: key}, nil
+}
+
+// Close zeros the key copy held by the Encryptor.
+// The cipher.Block expanded key schedule (internal Go stdlib struct) cannot be
+// zeroed through the public API; callers should ensure the key was mlock'd via
+// KeyManager so its pages cannot be swapped even if cipher.Block survives GC.
+func (e *Encryptor) Close() {
+	for i := range e.key {
+		e.key[i] = 0
+	}
+	runtime.KeepAlive(e.key)
 }
 
 // Seal encrypts plaintext and returns an EncryptedRecord.
