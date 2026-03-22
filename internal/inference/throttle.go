@@ -13,10 +13,6 @@ package inference
 import (
 	"context"
 	"log/slog"
-	"os"
-	"os/exec"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -207,81 +203,6 @@ func (g *Governor) updateMetrics() {
 	g.gpuPercent.Store(int64(gpu))
 }
 
-// readCPURaw returns the cumulative (total, idle) jiffies from /proc/stat.
-// Returns (0, 0) on error; the caller handles the zero-value gracefully.
-func readCPURaw() (total, idle int64) {
-	data, err := os.ReadFile("/proc/stat")
-	if err != nil {
-		return 0, 0
-	}
-	line := strings.SplitN(string(data), "\n", 2)[0] // first line: "cpu  ..."
-	fields := strings.Fields(line)
-	if len(fields) < 5 || fields[0] != "cpu" {
-		return 0, 0
-	}
-
-	// Fields: user, nice, system, idle, iowait, irq, softirq, ...
-	for i, f := range fields[1:] {
-		v, err := strconv.ParseInt(f, 10, 64)
-		if err != nil {
-			return 0, 0
-		}
-		total += v
-		if i == 3 { // idle field
-			idle = v
-		}
-	}
-	return total, idle
-}
-
-// readGPUPercent reads GPU utilization. Currently reads from sysfs for Intel/AMD.
-// NVIDIA support requires nvidia-smi or NVML binding.
-// Returns 0 if GPU metrics are unavailable (conservative).
-func readGPUPercent() int {
-	// Intel integrated GPU via sysfs.
-	paths := []string{
-		"/sys/class/drm/card0/gt/gt0/busy_percent",
-		"/sys/class/drm/card1/gt/gt0/busy_percent",
-	}
-	for _, p := range paths {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		v, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err != nil {
-			continue
-		}
-		return v
-	}
-
-	// AMD via amdgpu sysfs.
-	amdPath := "/sys/class/drm/card0/device/gpu_busy_percent"
-	if data, err := os.ReadFile(amdPath); err == nil {
-		if v, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-			return v
-		}
-	}
-
-	// NVIDIA via nvidia-smi (works on Linux and Windows; subprocess is
-	// cached-friendly since nvidia-smi itself is fast when the driver is loaded).
-	// We time-box with a short context so a missing/hung nvidia-smi doesn't
-	// stall the metrics loop.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "nvidia-smi",
-		"--query-gpu=utilization.gpu",
-		"--format=csv,noheader,nounits",
-	).Output()
-	if err == nil {
-		// Output is "<utilization>\n" or "<util1>\n<util2>\n" for multi-GPU.
-		// Take the first line (GPU 0 or the primary GPU).
-		line := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
-		if v, err := strconv.Atoi(strings.TrimSpace(line)); err == nil {
-			return v
-		}
-	}
-
-	// Fallback: 0 (metrics unavailable, allow inference).
-	return 0
-}
+// readCPURaw and readGPUPercent are implemented in platform-specific files:
+//   throttle_unix.go    — Linux/macOS: /proc/stat + sysfs + nvidia-smi
+//   throttle_windows.go — Windows: GetSystemTimes + nvidia-smi
