@@ -134,6 +134,13 @@ func (s *Store) Write(ctx context.Context, node *MemoryNode) error {
 		return fmt.Errorf("writing node %x to LanceDB: %w", node.ID, err)
 	}
 
+	// PERF-1: keep embedding cache in sync.
+	if cacher, ok := s.db.(interface {
+		updateEmbeddingCache([16]byte, []float32)
+	}); ok {
+		cacher.updateEmbeddingCache(node.ID, node.Embedding)
+	}
+
 	// Tags not logged at INFO — they reflect screen content semantics (see threat model I2).
 	s.logger.Info("stored memory node",
 		"node_id", fmt.Sprintf("%x", node.ID),
@@ -183,6 +190,14 @@ func (s *Store) Delete(ctx context.Context, nodeID [16]byte) error {
 	if err := s.db.DeleteRecord(ctx, defaultTable, nodeID); err != nil {
 		return fmt.Errorf("deleting node %x: %w", nodeID, err)
 	}
+
+	// PERF-1: evict from embedding cache.
+	if evictor, ok := s.db.(interface {
+		evictEmbeddingCache([16]byte)
+	}); ok {
+		evictor.evictEmbeddingCache(nodeID)
+	}
+
 	s.logger.Info("deleted memory node", "node_id", fmt.Sprintf("%x", nodeID))
 	return nil
 }

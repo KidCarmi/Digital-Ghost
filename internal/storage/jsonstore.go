@@ -41,6 +41,13 @@ type JSONStore struct {
 	encryptor *Encryptor
 	logger    *slog.Logger
 	mu        sync.RWMutex
+
+	// PERF-1: in-memory embedding cache.
+	// All node embeddings are loaded at startup so NearestNeighbors can do
+	// cosine similarity in memory (O(N) dot products) rather than O(N) disk
+	// decrypts.  For 10k nodes at 768 dims this is ~29 MB.
+	embMu    sync.RWMutex
+	embCache map[[16]byte][]float32
 }
 
 // indexSentinelID is the fixed NodeID used as authenticated context when
@@ -64,12 +71,21 @@ func NewJSONStore(dir string, enc *Encryptor, logger *slog.Logger) (*JSONStore, 
 	if err := os.MkdirAll(memoriesDir, 0700); err != nil {
 		return nil, fmt.Errorf("creating memories directory: %w", err)
 	}
-	s := &JSONStore{dir: memoriesDir, encryptor: enc, logger: logger}
+	s := &JSONStore{
+		dir:       memoriesDir,
+		encryptor: enc,
+		logger:    logger,
+		embCache:  make(map[[16]byte][]float32),
+	}
 
 	// Migrate plaintext index.json → encrypted index.enc if needed.
 	if err := s.migrateIndexIfNeeded(); err != nil {
 		logger.Warn("index migration failed (will rebuild on next write)", "error", err)
 	}
+
+	// Pre-load all embeddings into the cache so NearestNeighbors is fast.
+	s.loadEmbeddingCache()
+
 	return s, nil
 }
 
@@ -150,54 +166,19 @@ func (s *JSONStore) NearestNeighbors(_ context.Context, _ string, query []float3
 		return nil, nil
 	}
 
-	// Load the index under the read lock, then release before doing disk I/O.
-	// Holding RLock across thousands of os.ReadFile calls would block all
-	// concurrent writes for the full search duration (potentially 10+ seconds).
-	s.mu.RLock()
-	entries, err := s.loadIndex()
-	s.mu.RUnlock()
-	if err != nil {
-		return nil, fmt.Errorf("loading index: %w", err)
-	}
+	// PERF-1: use in-memory embedding cache — no disk I/O needed.
+	// embMu protects embCache; we hold RLock for the full iteration to prevent
+	// a concurrent delete from evicting an entry mid-scan.
+	s.embMu.RLock()
+	defer s.embMu.RUnlock()
 
 	type candidate struct {
 		id    [16]byte
 		score float64
 	}
-	var candidates []candidate
-
-	for _, e := range entries {
-		idBytes, err := hex.DecodeString(e.ID)
-		if err != nil || len(idBytes) != 16 {
-			continue
-		}
-		var nodeID [16]byte
-		copy(nodeID[:], idBytes)
-
-		// Read individual node files outside the lock. Each .enc file is
-		// written atomically (write to .tmp + rename), so a concurrent write
-		// either completes before we read (we see new data) or after (we skip).
-		data, err := os.ReadFile(s.nodePath(nodeID))
-		if err != nil {
-			continue
-		}
-
-		rec := &EncryptedRecord{NodeID: nodeID, Timestamp: e.Timestamp, Data: data}
-		plaintext, err := s.encryptor.Open(rec)
-		if err != nil {
-			s.logger.Warn("tampered or unreadable node skipped", "id", e.ID, "error", err)
-			continue
-		}
-
-		var node MemoryNode
-		if err := json.Unmarshal(plaintext, &node); err != nil {
-			continue
-		}
-		if len(node.Embedding) == 0 {
-			continue
-		}
-
-		sim := cosineSimilarity(query, node.Embedding)
+	candidates := make([]candidate, 0, len(s.embCache))
+	for nodeID, emb := range s.embCache {
+		sim := cosineSimilarity(query, emb)
 		candidates = append(candidates, candidate{id: nodeID, score: sim})
 	}
 
@@ -216,6 +197,65 @@ func (s *JSONStore) NearestNeighbors(_ context.Context, _ string, query []float3
 		}
 	}
 	return results, nil
+}
+
+// updateEmbeddingCache inserts or replaces the cached embedding for nodeID.
+// Called by Store.Write via type assertion after a successful WriteRecord.
+func (s *JSONStore) updateEmbeddingCache(nodeID [16]byte, emb []float32) {
+	if len(emb) == 0 {
+		return
+	}
+	s.embMu.Lock()
+	s.embCache[nodeID] = emb
+	s.embMu.Unlock()
+}
+
+// evictEmbeddingCache removes nodeID from the cache.
+// Called by Store.Delete via type assertion after a successful DeleteRecord.
+func (s *JSONStore) evictEmbeddingCache(nodeID [16]byte) {
+	s.embMu.Lock()
+	delete(s.embCache, nodeID)
+	s.embMu.Unlock()
+}
+
+// loadEmbeddingCache reads every encrypted node file and populates embCache
+// with the stored embeddings.  This is called once at startup.
+// Non-fatal: nodes that cannot be read or have no embedding are silently skipped.
+func (s *JSONStore) loadEmbeddingCache() {
+	entries, err := s.loadIndex()
+	if err != nil || len(entries) == 0 {
+		return
+	}
+
+	loaded := 0
+	for _, e := range entries {
+		idBytes, err := hex.DecodeString(e.ID)
+		if err != nil || len(idBytes) != 16 {
+			continue
+		}
+		var nodeID [16]byte
+		copy(nodeID[:], idBytes)
+
+		data, err := os.ReadFile(s.nodePath(nodeID))
+		if err != nil {
+			continue
+		}
+		rec := &EncryptedRecord{NodeID: nodeID, Timestamp: e.Timestamp, Data: data}
+		plaintext, err := s.encryptor.Open(rec)
+		if err != nil {
+			continue
+		}
+		var node MemoryNode
+		if err := json.Unmarshal(plaintext, &node); err != nil || len(node.Embedding) == 0 {
+			continue
+		}
+		s.embCache[nodeID] = node.Embedding
+		loaded++
+	}
+
+	if loaded > 0 {
+		s.logger.Info("embedding cache loaded", "vectors", loaded, "total_nodes", len(entries))
+	}
 }
 
 func (s *JSONStore) DeleteRecord(_ context.Context, _ string, nodeID [16]byte) error {
