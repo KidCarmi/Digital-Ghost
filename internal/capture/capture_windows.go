@@ -417,6 +417,12 @@ func (ml *monitorLoop) captureFrame() (*Frame, error) {
 	if err := HashFrame(frame); err != nil {
 		c.logger.Debug("pHash failed", "display", ml.displayIdx, "error", err)
 	}
+
+	// PERF-6: downscale to queue target dimensions after hashing.
+	// pHash must be computed on the full-res image first (done above).
+	// This reduces queue peak memory from ~830 MB to ~100 MB.
+	DownscaleForQueue(frame)
+
 	return frame, nil
 }
 
