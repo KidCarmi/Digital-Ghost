@@ -200,11 +200,19 @@ func (m *Manager) loadConsentRecord() (*ConsentRecord, error) {
 	// Verify HMAC if a key is available.
 	if m.key != nil {
 		if record.HMACSignature == "" {
-			// Legacy record written before signing was introduced — accept but
-			// re-sign on next RequestConsent() call. Log a warning so operators
-			// are aware.
-			fmt.Fprintf(os.Stderr, "WARNING: consent record has no HMAC signature (legacy format); "+
-				"re-run Digital Ghost to upgrade it\n")
+			// Legacy record — upgrade it in place by signing and rewriting.
+			// This is a one-time migration; subsequent loads will verify the HMAC.
+			fmt.Fprintf(os.Stderr, "INFO: upgrading consent record with HMAC signature\n")
+			sig, err := m.signRecord(record)
+			if err == nil {
+				record.HMACSignature = sig
+				if data, merr := json.MarshalIndent(record, "", "  "); merr == nil {
+					tmp := m.consentPath() + ".tmp"
+					if werr := os.WriteFile(tmp, data, 0600); werr == nil {
+						_ = os.Rename(tmp, m.consentPath())
+					}
+				}
+			}
 		} else {
 			expected, err := m.signRecord(record)
 			if err != nil {

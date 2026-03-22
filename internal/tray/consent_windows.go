@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/png"
 	"os/exec"
+	"runtime"
 	"time"
 	"unsafe"
 
@@ -86,6 +87,10 @@ func startTrayIconImpl(onStop, onPause, onResume func()) error {
 	ready := make(chan error, 1)
 
 	go func() {
+		// Windows: Shell_NotifyIcon + the message loop must stay on the same
+		// OS thread. LockOSThread pins this goroutine to one thread for its
+		// lifetime so the Win32 message pump is stable.
+		runtime.LockOSThread()
 		systray.Run(func() {
 			systray.SetIcon(trayIconPNG())
 			systray.SetTooltip("Digital Ghost — capturing")
