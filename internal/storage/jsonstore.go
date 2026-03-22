@@ -14,6 +14,7 @@
 package storage
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +24,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,6 +86,12 @@ func NewJSONStore(dir string, enc *Encryptor, logger *slog.Logger) (*JSONStore, 
 		logger.Warn("index migration failed (will rebuild on next write)", "error", err)
 	}
 
+	// ARCH-1: replay WAL to recover any nodes whose index entry was lost
+	// due to a crash between WriteRecord and appendIndex.
+	if err := s.replayWAL(); err != nil {
+		logger.Warn("WAL replay failed (non-fatal)", "error", err)
+	}
+
 	// Pre-load all embeddings into the cache so NearestNeighbors is fast.
 	s.loadEmbeddingCache()
 
@@ -133,6 +142,14 @@ func (s *JSONStore) migrateIndexIfNeeded() error {
 func (s *JSONStore) WriteRecord(_ context.Context, _ string, nodeID [16]byte, ts time.Time, payload []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// ARCH-1: write WAL entry before the .enc file so a crash mid-write
+	// leaves a recoverable record.  The WAL is replayed at startup.
+	if err := s.appendWAL(nodeID, ts); err != nil {
+		// WAL write failure is non-fatal — we proceed, but recovery after
+		// a crash between here and appendIndex will be incomplete.
+		s.logger.Warn("WAL append failed (non-fatal)", "error", err)
+	}
 
 	path := s.nodePath(nodeID)
 	if err := os.WriteFile(path, payload, 0600); err != nil {
@@ -364,6 +381,109 @@ func (s *JSONStore) Count(_ context.Context, _ string) (int, time.Time, error) {
 func (s *JSONStore) Close() error { return nil }
 
 // -- helpers ----------------------------------------------------------------
+
+// walPath returns the path to the write-ahead log file.
+func (s *JSONStore) walPath() string {
+	return filepath.Join(s.dir, "wal.log")
+}
+
+// appendWAL writes a single line "<hex-nodeID> <unix-nano>\n" to the WAL.
+// The file is O_APPEND|O_CREATE so concurrent appends are safe on POSIX
+// and Windows (each write is serialised under s.mu which callers hold).
+func (s *JSONStore) appendWAL(nodeID [16]byte, ts time.Time) error {
+	f, err := os.OpenFile(s.walPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%s %d\n", hex.EncodeToString(nodeID[:]), ts.UnixNano())
+	return err
+}
+
+// replayWAL reads wal.log, finds any nodeID whose .enc file exists but is
+// absent from the encrypted index, and re-indexes those orphaned nodes.
+// After a successful replay the WAL file is removed.
+func (s *JSONStore) replayWAL() error {
+	walFile := s.walPath()
+	f, err := os.Open(walFile)
+	if os.IsNotExist(err) {
+		return nil // nothing to replay
+	}
+	if err != nil {
+		return fmt.Errorf("opening WAL: %w", err)
+	}
+
+	// Parse WAL entries.
+	type walEntry struct {
+		nodeID [16]byte
+		ts     time.Time
+	}
+	var walEntries []walEntry
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		idBytes, err := hex.DecodeString(parts[0])
+		if err != nil || len(idBytes) != 16 {
+			continue
+		}
+		nanos, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		var nodeID [16]byte
+		copy(nodeID[:], idBytes)
+		walEntries = append(walEntries, walEntry{nodeID: nodeID, ts: time.Unix(0, nanos).UTC()})
+	}
+	f.Close()
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scanning WAL: %w", err)
+	}
+	if len(walEntries) == 0 {
+		_ = os.Remove(walFile)
+		return nil
+	}
+
+	// Build a set of nodeIDs already present in the index.
+	existing, _ := s.loadIndex()
+	inIndex := make(map[string]bool, len(existing))
+	for _, e := range existing {
+		inIndex[e.ID] = true
+	}
+
+	// Re-index any orphan: .enc file exists but not in index.
+	recovered := 0
+	for _, we := range walEntries {
+		hexID := hex.EncodeToString(we.nodeID[:])
+		if inIndex[hexID] {
+			continue // already indexed
+		}
+		if _, err := os.Stat(s.nodePath(we.nodeID)); os.IsNotExist(err) {
+			continue // .enc file also missing — nothing to recover
+		}
+		if err := s.appendIndex(we.nodeID, we.ts); err != nil {
+			s.logger.Warn("WAL recovery: appendIndex failed", "id", hexID, "error", err)
+			continue
+		}
+		recovered++
+		s.logger.Info("WAL recovery: orphaned node re-indexed", "id", hexID)
+	}
+
+	// Remove WAL now that replay is complete.
+	if err := os.Remove(walFile); err != nil && !os.IsNotExist(err) {
+		s.logger.Warn("could not remove WAL after replay", "error", err)
+	}
+	if recovered > 0 {
+		s.logger.Info("WAL replay complete", "recovered", recovered)
+	}
+	return nil
+}
 
 func (s *JSONStore) nodePath(id [16]byte) string {
 	return filepath.Join(s.dir, hex.EncodeToString(id[:])+".enc")
